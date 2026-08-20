@@ -1,5 +1,5 @@
-# 大文件 - 不提交到 git，驱动包通过 GitHub Release 分发
-*.txz
+# 驱动包（大文件 199MB）- 不提交到 git，通过 GitHub Release 分发
+nvidia-*.txz
 *.run
 
 # 构建产物
