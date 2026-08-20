@@ -1,0 +1,146 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+  <!ENTITY name      "vgpu-driver">
+  <!ENTITY author    "hellomrli">
+  <!ENTITY version   "2026.08.20">
+  <!ENTITY launch    "Settings/vgpu-driver">
+  <!ENTITY gitURL    "https://github.com/&author;/my-&name;/raw/master">
+  <!ENTITY pluginURL "&gitURL;/&name;.plg">
+  <!ENTITY md5       "705391a341f471c975ffcb79ef62bf93">
+  <!ENTITY plugin    "/boot/config/plugins/&name;">
+  <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
+  <!ENTITY packages  "/boot/config/plugins/&name;/packages">
+]>
+
+<PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/my-&name;">
+
+<CHANGES>
+##2026.08.20
+- Initial release for the merged vGPU driver plugin
+- MERGED driver: vGPU host driver + standard NVIDIA driver in one package,
+  so the host GPU also works for docker containers (--gpus all), not just VMs
+- Driver: NVIDIA vGPU 16.14 (535.309.01) for Unraid kernel 6.18.44
+- Target GPU: Tesla P4 (native vGPU support, no unlock needed; unlock option
+  kept for consumer GPUs)
+- vGPU devices managed from the plugin page (add/remove/start/stop, live
+  profile list, VM XML snippets), restored at every boot
+- Driver updates install live without a reboot (when no VM holds a vGPU)
+- vgpuConfig.xml override support for GPUs dropped from newer driver XMLs
+- profile_override.toml editable from the plugin page
+
+</CHANGES>
+
+<FILE Run="/bin/bash">
+<INLINE>
+rm -f $(ls /boot/config/plugins/&name;/&name;*.txz 2>/dev/null|grep -v '&version;')
+</INLINE>
+</FILE>
+
+<FILE Name="/boot/config/plugins/&name;/&name;-&version;.txz" Run="upgradepkg --install-new">
+<URL>&gitURL;/packages/&name;-&version;.txz</URL>
+<MD5>&md5;</MD5>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+# LOCAL-FIRST fallback: if the plugin package was placed locally (no GitHub
+# hosting yet), install it from the flash drive.
+if [ ! -d "&emhttp;" ]; then
+  LOCAL_PLUGIN_PKG="$(ls /boot/config/plugins/&name;/&name;*.txz 2>/dev/null | head -1)"
+  if [ -n "${LOCAL_PLUGIN_PKG}" ]; then
+    echo "---Installing local plugin package $(basename "${LOCAL_PLUGIN_PKG}")---"
+    upgradepkg --install-new "${LOCAL_PLUGIN_PKG}"
+  fi
+fi
+</INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/README.md">
+<INLINE>
+**NVIDIA vGPU (Merged) Driver**
+
+Installs the Nvidia vGPU host driver (merged with the standard NVIDIA driver)
+and lets you split your GPU into virtual GPUs (mdev devices) for your VMs,
+configured entirely from the plugin page under Settings. The merged driver
+also keeps the GPU usable for host-side docker containers (--gpus all).
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+
+KERNEL_V="$(uname -r)"
+
+#Create settings file if not found and migrate missing keys
+if [ ! -f "&plugin;/settings.cfg" ]; then
+  echo 'first_installation=true
+driver_version=latest
+update_check=true
+unlock=false' > "&plugin;/settings.cfg"
+fi
+if ! grep -q "^unlock=" "&plugin;/settings.cfg"; then
+  echo "unlock=false" >> "&plugin;/settings.cfg"
+fi
+if ! grep -q "^update_check=" "&plugin;/settings.cfg"; then
+  echo "update_check=true" >> "&plugin;/settings.cfg"
+fi
+
+#Move old flat package directory layout to per-kernel directories
+mkdir -p "&packages;/${KERNEL_V%%-*}"
+if find &packages; -maxdepth 1 -type f -name "*.txz" 2>/dev/null | grep -q . ; then
+  mv $(find &packages; -maxdepth 1 -type f -name "*.txz*") "&packages;/${KERNEL_V%%-*}/" 2>/dev/null
+fi
+
+#Download the driver package for this kernel (keeps a local copy when offline)
+if ! /bin/bash &emhttp;/include/download.sh; then
+  if ! ls "&packages;/${KERNEL_V%%-*}"/nvidia-*.txz >/dev/null 2>&amp;1 ; then
+    rm -rf &plugin; &emhttp;
+    exit 1
+  fi
+fi
+
+#Install the driver if needed, live-reload on a new build and start the
+#vGPU stack (modules, daemons, configured mdev devices)
+/bin/bash &emhttp;/scripts/rc.vgpu ensure
+
+#Enable the daily update check
+if [ "$(grep "^update_check=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
+  if ! crontab -l 2>/dev/null | grep -q "&emhttp;/include/update-check.sh"; then
+    (crontab -l 2>/dev/null ; echo "$((RANDOM % 59)) $(shuf -i 8-9 -n 1) * * * &emhttp;/include/update-check.sh &amp;>/dev/null 2>&amp;1") | crontab -
+  fi
+fi
+
+#First installation hint
+if [ "$(grep "^first_installation=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
+  /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Nvidia vGPU Driver" -d "Installation successful! Go to Settings -> NVIDIA vGPU to create your vGPU devices." -l "/&launch;"
+  sed -i '/^first_installation=/c\first_installation=false' "&plugin;/settings.cfg"
+fi
+echo
+echo "----- Nvidia vGPU (Merged) driver plugin v&version; ready -----"
+
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+
+echo "-----------------------------------------------"
+echo "---Uninstalling Nvidia vGPU driver package...---"
+echo "-----------------------------------------------"
+#Stop configured vGPU devices and the vGPU daemons
+/bin/bash &emhttp;/scripts/rc.vgpu stop 2>/dev/null
+#Remove the update check cron job
+crontab -l 2>/dev/null | grep -v "&emhttp;/include/update-check.sh" | crontab -
+#Remove plugin related files (the kernel module stays loaded until reboot)
+removepkg &name;-&version;
+rm -rf /usr/local/emhttp/plugins/&name;
+rm -rf &plugin;
+echo
+echo "-----------------------------------------------------------------------"
+echo "---Nvidia vGPU driver uninstalled, please reboot to unload the driver---"
+echo "-----------------------------------------------------------------------"
+echo
+
+</INLINE>
+</FILE>
+</PLUGIN>
