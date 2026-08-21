@@ -13,6 +13,16 @@
 | **vGPU 虚拟机直通** | `nvidia-vgpu-vfio.ko`、`nvidia-vgpud`、`nvidia-vgpu-mgr`、`vgpuConfig.xml`、`libnvidia-vgpu.so`、`libnvidia-vgxcfg.so` |
 | **宿主机 GPU（docker/CUDA/OpenGL）** | `nvidia.ko`、`nvidia-uvm/modeset/drm/peermem`、`libcuda`、OpenGL/OpenCL/Vulkan 用户态库 |
 
+**实测验证**（Tesla P4，535.309.01，Unraid 6.18.44）：GPU 绑定 `nvidia` 标准驱动，同时 `nvidia-vgpu-vfio` 暴露 mdev 类型，因此**同一张卡上**：
+
+- 宿主机 `nvidia-smi -L` 可见 → `GPU 0: Tesla P4`
+- Docker 容器 `--gpus all`（`nvidia/cuda:12.2.0-base-ubuntu22.04`）可见 → `Tesla P4, CUDA 12.2`
+- vGPU mdev 可同时创建（如 `nvidia-65` 4GB 档）分配给 VM
+
+即：**宿主机 docker/CUDA 调用 P4 的同时，vGPU 也能切分给 VM**，两者并行不冲突。
+
+> 注意：Merged 效果来自 `nvidia` + `nvidia-vgpu-vfio` 双模块共存，**不需要**任何 `cudahost=1` / `vup_kunlock=1` 之类的 modprobe 参数（这些参数并不存在，会被内核忽略）。
+
 源码树由 `scripts/merge-driver.sh` 生成：
 
 - **grid** 包（标准 Linux 驱动）作为基础
