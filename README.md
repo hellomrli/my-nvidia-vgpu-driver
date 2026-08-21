@@ -31,6 +31,25 @@
 
 对于 535.309.01 版本，grid 和 vgpu-kvm 的 `nv-kernel.o_binary` 逐字节相同，仅 conftest 标志不同，因此合并是安全的。
 
+## vgpu_unlock（消费级 GPU 解锁）
+
+驱动包内置了开源项目 [vgpu_unlock](https://github.com/DualCoder/vgpu_unlock) / [vgpu_unlock-rs](https://github.com/mbilker/vgpu_unlock-rs) 的完整两层组件，用于让**消费级游戏卡**（不在 NVIDIA vGPU 认证名单里的 GTX/RTX 卡）也能切分 vGPU：
+
+| 层 | 组件 | 说明 |
+|----|------|------|
+| **内核层** | `vgpu_unlock_hooks.c` + `kern.ld` | 编译进 `nvidia.ko`：hook `memcpy`/`nv_ioremap*`，把 `nv-kernel.o` 的 `.rodata` 重定位到 `.data` 以便改写 vGPU 配置签名（已适配 535.x 的 magic 值） |
+| **用户空间层** | `libvgpu_unlock_rs.so`（预编译，`/usr/local/lib/`） | 插件通过 `LD_PRELOAD` 注入 `nvidia-vgpud`/`nvidia-vgpu-mgr`，hook ioctl 把消费卡的 PCI 设备 ID 伪装成 vGPU 认证卡 |
+
+**支持范围**（与 vgpu_unlock 上游一致）：
+
+- ✅ Maxwell / Pascal / Turing 消费卡（GTX 9/10 系列、RTX 20 系列），伪装成对应的 Tesla/Quadro 认证卡
+- ⚠️ Ampere（RTX 30 系列）上游标记为 work-in-progress
+- ❌ Ada Lovelace（RTX 40 系列）不支持
+
+**启用方式**：在插件的 NVIDIA GPU 页打开 **vGPU unlock** 开关即可（`/etc/vgpu_unlock/config.toml` 的 `unlock = true`，配合 `LD_PRELOAD` 启动守护进程）。
+
+> ⚠️ 说明：本项目实测目标是 **Tesla P4（原生支持，无需 unlock）**。消费级卡的解锁路径**尚未在真机上验证**（需要一块 GTX/RTX 消费卡实测）。内核补丁的 magic 值针对 535.x 分支适配，但不同小版本之间可能需要微调。
+
 ## 构建产物
 
 ```
