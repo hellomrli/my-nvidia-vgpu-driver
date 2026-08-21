@@ -59,6 +59,20 @@ kmake() {
 }
 
 # ---------- 1. merged source tree ----------
+# make sure the two official .run files are present (alist mirror by default)
+need_cmd curl
+GRID_RUN="$DL_DIR/grid-${VERSION}.run"
+VGPU_RUN="$DL_DIR/vgpu-kvm-${VERSION}.run"
+if [ ! -s "$GRID_RUN" ]; then
+  log "Downloading grid driver from alist mirror"
+  curl -L --fail --retry 3 --retry-delay 2 -o "$GRID_RUN.tmp" "$GRID_RUN_URL"
+  mv "$GRID_RUN.tmp" "$GRID_RUN"
+fi
+if [ ! -s "$VGPU_RUN" ]; then
+  log "Downloading vgpu-kvm driver from alist mirror"
+  curl -L --fail --retry 3 --retry-delay 2 -o "$VGPU_RUN.tmp" "$VGPU_RUN_URL"
+  mv "$VGPU_RUN.tmp" "$VGPU_RUN"
+fi
 if [ ! -d "$MERGED_DIR/kernel" ]; then
   log "Building merged driver source tree"
   DL_DIR="$DL_DIR" OUT_DIR="$BUILD_DIR" VERSION="$VERSION" \
@@ -98,7 +112,7 @@ for m in $MODULES; do
 done
 vermagic="$(modinfo -F vermagic "$MERGED_DIR/kernel/nvidia.ko" 2>/dev/null | head -1)"
 log "nvidia vermagic: $vermagic"
-[ "$vermagic" = "$KERNEL_RELEASE SMP preempt mod_unload" ] || die "Vermagic mismatch: got '$vermagic'"
+[ "$(echo "$vermagic" | xargs)" = "$(echo "$KERNEL_RELEASE SMP preempt mod_unload" | xargs)" ] || die "Vermagic mismatch: got '$vermagic'"
 
 # ---------- 4. assemble the package ----------
 PKG_NAME="nvidia-${VERSION}-${KERNEL_RELEASE}-${PACKAGE_BUILD}"

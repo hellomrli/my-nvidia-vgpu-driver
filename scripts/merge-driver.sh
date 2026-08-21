@@ -52,12 +52,12 @@ MERGED_DIR="$OUT_DIR/merged-$VERSION"
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
 # ---------- 1. obtain the two official .run files ----------
-if [ ! -x "$GRID_RUN" ]; then
+if [ ! -s "$GRID_RUN" ]; then
   [ -n "$GRID_RUN_URL" ] || die "Missing $GRID_RUN - set GRID_RUN_URL or place the file in $DL_DIR"
   log "Downloading grid driver $VERSION"
   curl -L --fail --retry 3 -o "$GRID_RUN" "$GRID_RUN_URL"
 fi
-if [ ! -x "$VGPU_RUN" ]; then
+if [ ! -s "$VGPU_RUN" ]; then
   [ -n "$VGPU_RUN_URL" ] || die "Missing $VGPU_RUN - set VGPU_RUN_URL or place the file in $DL_DIR"
   log "Downloading vgpu-kvm driver $VERSION"
   curl -L --fail --retry 3 -o "$VGPU_RUN" "$VGPU_RUN_URL"
