@@ -1,79 +1,67 @@
 # my-nvidia-vgpu-driver
 
-NVIDIA vGPU (**Merged**) driver for **Unraid**, built from the official NVIDIA
-Linux driver packages and packaged as a Slackware `.txz` that installs
-directly on an Unraid server.
+为 **Unraid** 编译的 **NVIDIA vGPU（Merged）驱动**，基于 NVIDIA 官方 Linux 驱动包构建，打包为可直接安装到 Unraid 服务器的 Slackware `.txz` 格式。
 
-Used together with the [my-unraid-vgpu-manager](https://github.com/hellomrli/my-unraid-vgpu-manager)
-plugin, which downloads this package, installs it and manages vGPU devices
-(mdev) for VM passthrough.
+配合 [my-unraid-vgpu-manager](https://github.com/hellomrli/my-unraid-vgpu-manager) 插件使用——插件负责下载本包、安装并管理 vGPU 设备（mdev）供虚拟机直通。
 
-## The MERGED driver
+## 什么是 Merged 驱动？
 
-A single package that provides **both**:
+一个包同时提供**两种能力**：
 
-| purpose                     | components                                                                 |
-|-----------------------------|----------------------------------------------------------------------------|
-| **vGPU for VMs**            | `nvidia-vgpu-vfio.ko`, `nvidia-vgpud`, `nvidia-vgpu-mgr`, `vgpuConfig.xml`, `libnvidia-vgpu.so`, `libnvidia-vgxcfg.so` |
-| **Host GPU (docker/CUDA/GL)** | `nvidia.ko`, `nvidia-uvm/modeset/drm/peermem`, `libcuda`, OpenGL/OpenCL/Vulkan userspace |
+| 用途 | 组件 |
+|------|------|
+| **vGPU 虚拟机直通** | `nvidia-vgpu-vfio.ko`、`nvidia-vgpud`、`nvidia-vgpu-mgr`、`vgpuConfig.xml`、`libnvidia-vgpu.so`、`libnvidia-vgxcfg.so` |
+| **宿主机 GPU（docker/CUDA/OpenGL）** | `nvidia.ko`、`nvidia-uvm/modeset/drm/peermem`、`libcuda`、OpenGL/OpenCL/Vulkan 用户态库 |
 
-The source tree is created by `scripts/merge-driver.sh`:
+源码树由 `scripts/merge-driver.sh` 生成：
 
-- **grid** package (standard Linux driver) is the base
-- **vgpu-kvm** package contributes the vGPU kernel driver + userspace
-- both `VGX_KVM_BUILD=1` and `GRID_BUILD=1` are defined in `conftest.sh`, so a
-  single build produces both module sets
+- **grid** 包（标准 Linux 驱动）作为基础
+- **vgpu-kvm** 包贡献 vGPU 内核驱动 + 用户态组件
+- `conftest.sh` 同时定义 `VGX_KVM_BUILD=1` 和 `GRID_BUILD=1`，一次编译产出两套模块
 
-For 535.309.01 the `nv-kernel.o_binary` is byte-identical between the grid
-and vgpu-kvm packages; only the conftest flags differ.
+对于 535.309.01 版本，grid 和 vgpu-kvm 的 `nv-kernel.o_binary` 逐字节相同，仅 conftest 标志不同，因此合并是安全的。
 
-## What this produces
+## 构建产物
 
 ```
-out/nvidia-<version>-<kernel>-Unraid-<build>.txz   (+ .md5)
+out/nvidia-<版本>-<内核>-Unraid-<构建号>.txz   (+ .md5)
 ```
 
-Six kernel modules for the target Unraid kernel plus the full userspace
-(libraries, binaries, vgpuConfig.xml, license template, install scripts).
+针对目标 Unraid 内核编译的 6 个内核模块，加上完整用户态（库、二进制、vgpuConfig.xml、许可模板、安装脚本）。
 
-## Cloud build (GitHub Actions)
+## 云编译（GitHub Actions）
 
-`.github/workflows/build-nvidia.yml` runs `scripts/build-nvidia-driver.sh`
-(merge -> build -> package):
+`.github/workflows/build-nvidia.yml` 执行 `scripts/build-nvidia-driver.sh`（合并 → 编译 → 打包）：
 
-- **manual**: run the *Build NVIDIA vGPU driver* workflow, choose the driver
-  version, Unraid kernel release and package build number
-- the two official NVIDIA `.run` files (grid + vgpu-kvm) are downloaded
-  automatically from the public alist mirror
-  (`https://alist.homelabproject.cc/foxipan/vGPU/`), or overridden with
-  `GRID_RUN_URL` / `VGPU_RUN_URL`
-- `nvidia-container-toolkit` + `libnvidia-container` are pulled from the
-  `driver-src-<version>` Release in this repo
+- **手动触发**：运行 *Build NVIDIA vGPU driver* 工作流，填写驱动版本、Unraid 内核版本和构建号
+- 两个官方 NVIDIA `.run` 文件（grid + vgpu-kvm）自动从公开 alist 镜像下载
+  （`https://alist.homelabproject.cc/foxipan/vGPU/`），也可用 `GRID_RUN_URL` / `VGPU_RUN_URL` 覆盖
+- `nvidia-container-toolkit` + `libnvidia-container` 从本仓库 `driver-src-<版本>` Release 拉取
 
-The package is attached to a Release whose tag equals the kernel release
-(e.g. `6.18.44-Unraid`).
+构建产物附加到 **tag 等于内核版本** 的 Release（如 `6.18.44-Unraid`、`6.18.43-Unraid`）。
 
-## Local build
+## 本地构建
 
 ```bash
-# 1. merge (downloads grid-<ver>.run + vgpu-kvm-<ver>.run from alist)
+# 1. 合并（自动从 alist 下载 grid-<ver>.run + vgpu-kvm-<ver>.run）
 ./scripts/merge-driver.sh --version 535.309.01
 
-# 2. build + package (needs a Linux box with gcc/make/curl/tar/xz)
+# 2. 编译 + 打包（需要 Linux 环境，装有 gcc/make/curl/tar/xz）
 KERNEL_RELEASE=6.18.44-Unraid VERSION=535.309.01 \
 ./scripts/build-nvidia-driver.sh
 ```
 
-## Rebuilding for a new Unraid kernel
+## 针对新内核重新编译
 
-`build/rebuild-driver.sh` recompiles the merged source against a new kernel
-source tree without re-merging:
+`build/rebuild-driver.sh` 可在不重新合并的情况下，针对新内核源码树重编译已合并的源：
 
 ```bash
 ./build/rebuild-driver.sh --kernel /path/to/kernel-6.18.45-Unraid \
                           --merged /path/to/merged-535.309.01 --package
 ```
 
-## Releases
+## Release
 
-Current build: **535.309.01** for **6.18.44-Unraid** (tag `6.18.44-Unraid`).
+当前构建：**535.309.01**（vGPU 16.14，支持 Tesla P4 等 Pascal 卡）for **6.18.44-Unraid / 6.18.43-Unraid**（tag 与内核版本一致）。
+
+> 注意：`driver-src-<版本>` Release 存放云编译所需的官方 .run 文件（需要 NVIDIA 企业账号才能从官网下载，这里做镜像），驱动包本身在 `<内核版本>` Release 中。

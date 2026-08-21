@@ -1,6 +1,7 @@
 # 驱动包（大文件）- 通过 GitHub Release 分发
 nvidia-*.txz
 *.run
+packages/
 
 # 构建产物（本地/云编译）
 build/output/
