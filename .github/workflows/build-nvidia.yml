@@ -46,7 +46,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            bc bison build-essential ca-certificates curl flex git kmod \
+            bc bison build-essential ca-certificates curl flex git jq kmod \
             libelf-dev make tar xz-utils
           rm -rf /var/lib/apt/lists/*
           gcc --version | head -1
