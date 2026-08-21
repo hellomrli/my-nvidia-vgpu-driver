@@ -138,6 +138,18 @@ LNC_TAR="$ROOT_DIR/tools/libnvidia-container.tar.gz"
 tar -xzf "$CTK_TAR" -C "$STAGE"
 tar -xzf "$LNC_TAR" -C "$STAGE"
 
+# --- mdevctl (mediated device management; prebuilt, committed to tools/) ---
+# Unraid has no mdevctl package, so ship it with the driver. It needs three
+# dirs to self-check: /etc/mdevctl.d and both scripts.d subdirs.
+MDEVCTL_BIN="$ROOT_DIR/tools/mdevctl"
+[ -s "$MDEVCTL_BIN" ] || die "Missing $MDEVCTL_BIN (committed to the repo tools/ dir)"
+mkdir -p "$STAGE/usr/bin"
+cp -a "$MDEVCTL_BIN" "$STAGE/usr/bin/mdevctl"
+chmod 755 "$STAGE/usr/bin/mdevctl"
+mkdir -p "$STAGE/etc/mdevctl.d" \
+         "$STAGE/usr/lib/mdevctl/scripts.d/callouts" \
+         "$STAGE/usr/lib/mdevctl/scripts.d/notifiers"
+
 # --- NVIDIA userspace from the merged tree (== grid base + vgpu overlay) ---
 # binaries -> usr/bin
 mkdir -p "$STAGE/usr/bin"
