@@ -75,8 +75,27 @@ jobs:
           pkg="$(ls out/nvidia-*.txz | head -1)"
           pkg_base="$(basename "$pkg")"
           release_tag="${KERNEL_RELEASE}"
-          gh release create "$release_tag" "$pkg" "$pkg.md5" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "NVIDIA vGPU (Merged) for ${KERNEL_RELEASE}" \
-            --notes "MERGED driver (vGPU + GRID) ${{ inputs.driver_version }} for ${KERNEL_RELEASE}" \
-            || gh release upload "$release_tag" "$pkg" "$pkg.md5" --repo "$GITHUB_REPOSITORY" --clobber
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases"
+          rid="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                  "${api}/tags/${release_tag}" | jq -r '.id // empty' 2>/dev/null || true)"
+          if [ -z "$rid" ]; then
+            rid="$(curl -fsSL -X POST -H "Authorization: Bearer ${GH_TOKEN}" \
+                   -H "Accept: application/vnd.github+json" \
+                   -d "{\"tag_name\":\"${release_tag}\",\"name\":\"NVIDIA vGPU (Merged) for ${release_tag}\",\"body\":\"MERGED driver (vGPU + GRID) ${{ inputs.driver_version }} for ${release_tag}\"}" \
+                   "${api}" | jq -r '.id')"
+          fi
+          for f in "$pkg" "$pkg.md5"; do
+            base="$(basename "$f")"
+            asset_id="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
+                        "${api}/${rid}/assets?per_page=100" | \
+                        jq -r --arg n "$base" '.[] | select(.name == $n) | .id' | head -1)"
+            if [ -n "$asset_id" ]; then
+              curl -fsSL -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" \
+                "${api}/assets/${asset_id}"
+            fi
+            curl -fsSL -X POST -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@$f" \
+              "${api}/${rid}/assets?name=${base}"
+          done
+          echo "Published ${pkg_base} to release ${release_tag}"

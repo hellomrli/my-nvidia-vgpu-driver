@@ -121,46 +121,94 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
 log "Assembling package files"
-# --- modules ---
+# --- kernel modules ---
 MOD_DEST="$STAGE/lib/modules/${KERNEL_RELEASE}/kernel/drivers/video"
 mkdir -p "$MOD_DEST"
 for m in $MODULES; do
   cp "$MERGED_DIR/kernel/$m.ko" "$MOD_DEST/"
 done
 
-# --- userspace: copy the .run extraction of the merged tree (== grid) ---
-# the merged tree contains everything the grid run file had; copy the whole
-# tree, then overlay the vgpu daemons/libs, then strip build artifacts.
-cp -a "$MERGED_DIR"/. "$STAGE/"
-rm -rf "$STAGE/kernel" "$STAGE/kernel-open" "$STAGE/html" "$STAGE/firmware"
-rm -f  "$STAGE/README.txt" "$STAGE/LICENSE" "$STAGE/GRID_LICENSE" \
-       "$STAGE/MERGED_INFO.txt" "$STAGE/makeself.sh" "$STAGE/makeself-help-script.sh" \
-       "$STAGE/nvidia-installer" "$STAGE/nvidia-installer.1.gz" "$STAGE/install*" \
-       "$STAGE/.build" 2>/dev/null || true
+# --- container toolkit (official NVIDIA binaries mirrored on this repo) ---
+CTK_TAR="$DL_DIR/nvidia-container-toolkit.tar.gz"
+LNC_TAR="$DL_DIR/libnvidia-container.tar.gz"
+TOOLKIT_BASE="https://github.com/hellomrli/my-vgpu-driver/releases/download/driver-src-${VERSION}"
+if [ ! -s "$CTK_TAR" ]; then
+  log "Downloading nvidia-container-toolkit"
+  curl -L --fail --retry 3 -o "$CTK_TAR.tmp" "$TOOLKIT_BASE/nvidia-container-toolkit.tar.gz"
+  mv "$CTK_TAR.tmp" "$CTK_TAR"
+fi
+if [ ! -s "$LNC_TAR" ]; then
+  log "Downloading libnvidia-container"
+  curl -L --fail --retry 3 -o "$LNC_TAR.tmp" "$TOOLKIT_BASE/libnvidia-container.tar.gz"
+  mv "$LNC_TAR.tmp" "$LNC_TAR"
+fi
+tar -xzf "$CTK_TAR" -C "$STAGE"
+tar -xzf "$LNC_TAR" -C "$STAGE"
 
-# move user binaries into usr/bin (Unraid layout)
+# --- NVIDIA userspace from the merged tree (== grid base + vgpu overlay) ---
+# binaries -> usr/bin
 mkdir -p "$STAGE/usr/bin"
-for b in nvidia-smi nvidia-modprobe nvidia-debugdump nvidia-vgpud nvidia-vgpu-mgr \
-         nvidia-xid-logd sriov-manage nvidia-cuda-mps-control nvidia-cuda-mps-server; do
-  [ -e "$STAGE/$b" ] && mv -f "$STAGE/$b" "$STAGE/usr/bin/"
+for b in nvidia-smi nvidia-modprobe nvidia-debugdump nvidia-gridd nvidia-persistenced \
+         nvidia-settings nvidia-xconfig nvidia-cuda-mps-control nvidia-cuda-mps-server \
+         nvidia-vgpud nvidia-vgpu-mgr nvidia-xid-logd sriov-manage; do
+  [ -e "$MERGED_DIR/$b" ] && cp -a "$MERGED_DIR/$b" "$STAGE/usr/bin/"
 done
 
-# libraries into usr/lib64
+# shared libraries -> usr/lib64 (versioned real files, no symlinks yet)
 mkdir -p "$STAGE/usr/lib64"
-for l in "$STAGE"/libnvidia-*.so* "$STAGE"/libcuda.so* "$STAGE"/libGL*.so* \
-         "$STAGE"/libEGL*.so* "$STAGE"/libGLES*.so* "$STAGE"/libOpen*.so* \
-         "$STAGE"/libnvcuvid.so* "$STAGE"/libnvoptix.so* "$STAGE"/libvdpau*.so* \
-         "$STAGE"/libglvnd*; do
-  [ -e "$l" ] && mv -f "$l" "$STAGE/usr/lib64/" 2>/dev/null || true
-done
-find "$STAGE" -maxdepth 1 -name "*.so*" -exec mv -f {} "$STAGE/usr/lib64/" \; 2>/dev/null || true
+cp -a "$MERGED_DIR"/lib*.so* "$STAGE/usr/lib64/" 2>/dev/null || true
 
-# vgpu shared libs also under usr/lib/nvidia (mgr/vgpu look here)
+# vgpu shared libs also under usr/lib/nvidia (mgr/vgpud look here)
 mkdir -p "$STAGE/usr/lib/nvidia"
-cp -a "$MERGED_DIR/libnvidia-vgpu.so.$VERSION" "$STAGE/usr/lib/nvidia/" 2>/dev/null || true
-cp -a "$MERGED_DIR/libnvidia-vgxcfg.so.$VERSION" "$STAGE/usr/lib/nvidia/" 2>/dev/null || true
+cp -a "$MERGED_DIR"/libnvidia-vgpu.so.${VERSION} "$STAGE/usr/lib/nvidia/" 2>/dev/null || true
+cp -a "$MERGED_DIR"/libnvidia-vgxcfg.so.${VERSION} "$STAGE/usr/lib/nvidia/" 2>/dev/null || true
 
-# --- config files (managed by the plugin) ---
+# X11 driver module
+mkdir -p "$STAGE/usr/lib64/xorg/modules/drivers"
+[ -e "$MERGED_DIR/nvidia_drv.so" ] && cp -a "$MERGED_DIR/nvidia_drv.so" "$STAGE/usr/lib64/xorg/modules/drivers/"
+
+# GSP firmware
+if [ -d "$MERGED_DIR/firmware/nvidia" ]; then
+  mkdir -p "$STAGE/lib/firmware/nvidia"
+  cp -a "$MERGED_DIR"/firmware/nvidia/gsp_*.bin "$STAGE/lib/firmware/nvidia/" 2>/dev/null || true
+fi
+
+# soname symlinks (layout validated against the released package)
+liblink() { ln -sfn "$2" "$STAGE/usr/lib64/$1"; }
+liblink libcuda.so                    libcuda.so.${VERSION}
+liblink libcuda.so.1                  libcuda.so.${VERSION}
+liblink libEGL.so                     libEGL.so.${VERSION}
+liblink libEGL.so.1                   libEGL.so.${VERSION}
+liblink libGL.so                      libGL.so.1.7.0
+liblink libGL.so.1                    libGL.so.1.7.0
+liblink libnvcuvid.so                 libnvcuvid.so.${VERSION}
+liblink libnvcuvid.so.1               libnvcuvid.so.${VERSION}
+liblink libnvidia-cfg.so              libnvidia-cfg.so.${VERSION}
+liblink libnvidia-cfg.so.1            libnvidia-cfg.so.${VERSION}
+liblink libnvidia-eglcore.so.1        libnvidia-eglcore.so.${VERSION}
+liblink libnvidia-encode.so           libnvidia-encode.so.${VERSION}
+liblink libnvidia-encode.so.1         libnvidia-encode.so.${VERSION}
+liblink libnvidia-fbc.so              libnvidia-fbc.so.${VERSION}
+liblink libnvidia-fbc.so.1            libnvidia-fbc.so.${VERSION}
+liblink libnvidia-glcore.so.1         libnvidia-glcore.so.${VERSION}
+liblink libnvidia-glsi.so.1           libnvidia-glsi.so.${VERSION}
+liblink libnvidia-ml.so               libnvidia-ml.so.${VERSION}
+liblink libnvidia-ml.so.1             libnvidia-ml.so.${VERSION}
+liblink libnvidia-nvvm.so.1           libnvidia-nvvm.so.${VERSION}
+liblink libnvidia-opencl.so           libnvidia-opencl.so.${VERSION}
+liblink libnvidia-opencl.so.1         libnvidia-opencl.so.${VERSION}
+liblink libnvidia-ptxjitcompiler.so   libnvidia-ptxjitcompiler.so.${VERSION}
+liblink libnvidia-ptxjitcompiler.so.1 libnvidia-ptxjitcompiler.so.${VERSION}
+liblink libnvidia-rtcore.so.1         libnvidia-rtcore.so.${VERSION}
+liblink libnvidia-tls.so.1            libnvidia-tls.so.${VERSION}
+liblink libnvidia-vgpu.so             libnvidia-vgpu.so.${VERSION}
+liblink libnvidia-vgxcfg.so           libnvidia-vgxcfg.so.${VERSION}
+liblink libnvidia-vulkan-producer.so.1 libnvidia-vulkan-producer.so.${VERSION}
+liblink libOpenCL.so.1                libOpenCL.so.1.0.0
+ln -sfn libnvidia-vgpu.so.${VERSION}  "$STAGE/usr/lib/nvidia/libnvidia-vgpu.so"
+ln -sfn libnvidia-vgxcfg.so.${VERSION} "$STAGE/usr/lib/nvidia/libnvidia-vgxcfg.so"
+
+# --- config files ---
 mkdir -p "$STAGE/etc/nvidia" "$STAGE/etc/vgpu_unlock" "$STAGE/etc/glvnd/egl_vendor.d" \
          "$STAGE/etc/vulkan/icd.d" "$STAGE/usr/share/nvidia/vgpu" \
          "$STAGE/usr/share/glvnd/egl_vendor.d" "$STAGE/usr/share/vulkan/icd.d" \
@@ -170,17 +218,25 @@ mkdir -p "$STAGE/etc/nvidia" "$STAGE/etc/vgpu_unlock" "$STAGE/etc/glvnd/egl_vend
 if [ -f "$MERGED_DIR/vgpuConfig.xml" ]; then
   cp -a "$MERGED_DIR/vgpuConfig.xml" "$STAGE/usr/share/nvidia/vgpu/vgpuConfig.xml"
   cp -a "$MERGED_DIR/vgpuConfig.xml" "$STAGE/etc/vgpuConfig.xml"
+  cp -a "$MERGED_DIR/vgpuConfig.xml" "$STAGE/usr/share/nvidia/vgpuConfig.xml"
 else
   log "WARNING: vgpuConfig.xml not found in merged tree"
 fi
-# license + unlock templates
-cp -a "$MERGED_DIR/GRID_LICENSE" "$STAGE/etc/nvidia/gridd.conf.template" 2>/dev/null || \
+# license template (+ .new copy kept via doinst.sh config())
+if [ -f "$MERGED_DIR/gridd.conf.template" ]; then
+  cp -a "$MERGED_DIR/gridd.conf.template" "$STAGE/etc/nvidia/gridd.conf.template"
+  cp -a "$MERGED_DIR/gridd.conf.template" "$STAGE/etc/nvidia/gridd.conf.new"
+else
   printf '# unraid-vgpu generated at runtime\n' > "$STAGE/etc/nvidia/gridd.conf.template"
+  cp -a "$STAGE/etc/nvidia/gridd.conf.template" "$STAGE/etc/nvidia/gridd.conf.new"
+fi
 : > "$STAGE/etc/vgpu_unlock/profile_override.toml.new"
-cp -a "$MERGED_DIR/10_nvidia.json" "$STAGE/etc/glvnd/egl_vendor.d/" 2>/dev/null || true
-cp -a "$MERGED_DIR/10_nvidia_wayland.json" "$STAGE/etc/glvnd/egl_vendor.d/" 2>/dev/null || true
-cp -a "$MERGED_DIR/15_nvidia_gbm.json" "$STAGE/etc/glvnd/egl_vendor.d/" 2>/dev/null || true
-cp -a "$MERGED_DIR/nvidia_icd.json" "$STAGE/etc/vulkan/icd.d/" 2>/dev/null || true
+cp -a "$MERGED_DIR/10_nvidia.json"   "$STAGE/etc/glvnd/egl_vendor.d/" 2>/dev/null || true
+cp -a "$MERGED_DIR/10_nvidia.json"   "$STAGE/usr/share/glvnd/egl_vendor.d/" 2>/dev/null || true
+cp -a "$MERGED_DIR/nvidia_icd.json"  "$STAGE/etc/vulkan/icd.d/" 2>/dev/null || true
+cp -a "$MERGED_DIR/nvidia_icd.json"  "$STAGE/usr/share/vulkan/icd.d/" 2>/dev/null || true
+printf 'libnvidia-opencl.so.1\n' > "$STAGE/etc/nvidia.icd"
+printf 'libnvidia-opencl.so.1\n' > "$STAGE/usr/share/OpenCL/vendors/nvidia.icd"
 
 # --- install scripts ---
 mkdir -p "$STAGE/install"

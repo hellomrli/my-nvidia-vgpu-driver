@@ -92,7 +92,7 @@ cp -a "$VGPU_X/kernel/common/inc/nv-vgpu-vfio-interface.h" "$MERGED_DIR/kernel/c
 
 # userspace vGPU binaries + daemons + config from vgpu-kvm
 for f in nvidia-vgpud nvidia-vgpu-mgr nvidia-vgxcfg libnvidia-vgpu.so.$VERSION \
-         libnvidia-vgxcfg.so.$VERSION nvidia-xid-logd; do
+         libnvidia-vgxcfg.so.$VERSION nvidia-xid-logd vgpuConfig.xml; do
   [ -e "$VGPU_X/$f" ] && cp -a "$VGPU_X/$f" "$MERGED_DIR/"
 done
 [ -d "$VGPU_X/systemd" ] && cp -a "$VGPU_X/systemd" "$MERGED_DIR/"
