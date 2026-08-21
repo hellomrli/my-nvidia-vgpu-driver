@@ -21,14 +21,21 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---------- config (overridable via environment) ----------
 VERSION="${VERSION:-535.309.01}"
+# alist vGPU branch directory for this driver version (535.309.01 == 16.14)
+ALIST_VGPU_BRANCH="${ALIST_VGPU_BRANCH:-16.14}"
 TARGET_KERNEL_VERSION="${TARGET_KERNEL_VERSION:-6.18.44}"
 KERNEL_RELEASE="${KERNEL_RELEASE:-${TARGET_KERNEL_VERSION}-Unraid}"
 JOBS="${JOBS:-$(nproc --all)}"
 PACKAGE_BUILD="${PACKAGE_BUILD:-1}"
 KERNEL_ARCHIVE_URL="${KERNEL_ARCHIVE_URL:-https://github.com/ich777/unraid_kernel/releases/download/${KERNEL_RELEASE}/linux-${KERNEL_RELEASE}.tar.xz}"
 KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-}"
-GRID_RUN_URL="${GRID_RUN_URL:-}"
-VGPU_RUN_URL="${VGPU_RUN_URL:-}"
+# Official NVIDIA .run files are mirrored on the alist vGPU share:
+#   https://alist.homelabproject.cc/foxipan/vGPU/<branch>/
+# The merged driver needs BOTH the grid (standard Linux) and the vgpu-kvm
+# package; they are the base and the vGPU component source respectively.
+ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/NVIDIA-GRID-Linux-KVM-${VERSION}-539.72}"
+GRID_RUN_URL="${GRID_RUN_URL:-${ALIST_BASE}/Guest_Drivers/NVIDIA-Linux-x86_64-${VERSION}-grid.run}"
+VGPU_RUN_URL="${VGPU_RUN_URL:-${ALIST_BASE}/Host_Drivers/NVIDIA-Linux-x86_64-${VERSION}-vgpu-kvm.run}"
 CC="${CC:-gcc}"
 HOSTCC="${HOSTCC:-$CC}"
 CXX="${CXX:-g++}"
@@ -129,7 +136,7 @@ mkdir -p "$STAGE/usr/lib64"
 for l in "$STAGE"/libnvidia-*.so* "$STAGE"/libcuda.so* "$STAGE"/libGL*.so* \
          "$STAGE"/libEGL*.so* "$STAGE"/libGLES*.so* "$STAGE"/libOpen*.so* \
          "$STAGE"/libnvcuvid.so* "$STAGE"/libnvoptix.so* "$STAGE"/libvdpau*.so* \
-         "$STAGE"/libglvnd* 2>/dev/null; do
+         "$STAGE"/libglvnd*; do
   [ -e "$l" ] && mv -f "$l" "$STAGE/usr/lib64/" 2>/dev/null || true
 done
 find "$STAGE" -maxdepth 1 -name "*.so*" -exec mv -f {} "$STAGE/usr/lib64/" \; 2>/dev/null || true

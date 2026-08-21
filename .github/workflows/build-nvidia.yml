@@ -59,10 +59,7 @@ jobs:
           KERNEL_RELEASE: ${{ inputs.kernel_release }}
           TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
           PACKAGE_BUILD: ${{ inputs.package_build }}
-          # official .run files are not publicly downloadable; they are stored
-          # as assets of the driver-src-<version> Release in this repo
-          GRID_RUN_URL: https://github.com/hellomrli/my-vgpu-driver/releases/download/driver-src-${{ inputs.driver_version }}/grid-${{ inputs.driver_version }}.run
-          VGPU_RUN_URL: https://github.com/hellomrli/my-vgpu-driver/releases/download/driver-src-${{ inputs.driver_version }}/vgpu-kvm-${{ inputs.driver_version }}.run
+          # .run files are fetched from the alist mirror (see build script)
         run: |
           set -euo pipefail
           export TARGET_KERNEL_VERSION="${KERNEL_RELEASE%-Unraid}"
