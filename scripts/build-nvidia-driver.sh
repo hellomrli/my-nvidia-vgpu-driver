@@ -164,13 +164,13 @@ cp -a "$MERGED_DIR"/libnvidia-vgpu.so.${VERSION} "$STAGE/usr/lib/nvidia/" 2>/dev
 cp -a "$MERGED_DIR"/libnvidia-vgxcfg.so.${VERSION} "$STAGE/usr/lib/nvidia/" 2>/dev/null || true
 
 # X11 driver module
-mkdir -p "$STAGE/usr/lib64/xorg/modules/drivers"
+mkdir -p "$STAGE/usr/lib64/xorg/modules/drivers" "$STAGE/usr/lib64/xorg/modules/extensions"
 [ -e "$MERGED_DIR/nvidia_drv.so" ] && cp -a "$MERGED_DIR/nvidia_drv.so" "$STAGE/usr/lib64/xorg/modules/drivers/"
 
-# GSP firmware
-if [ -d "$MERGED_DIR/firmware/nvidia" ]; then
+# GSP firmware (grid tree keeps them at firmware/*.bin)
+if ls "$MERGED_DIR"/firmware/gsp_*.bin >/dev/null 2>&1; then
   mkdir -p "$STAGE/lib/firmware/nvidia"
-  cp -a "$MERGED_DIR"/firmware/nvidia/gsp_*.bin "$STAGE/lib/firmware/nvidia/" 2>/dev/null || true
+  cp -a "$MERGED_DIR"/firmware/gsp_*.bin "$STAGE/lib/firmware/nvidia/"
 fi
 
 # soname symlinks (layout validated against the released package)
