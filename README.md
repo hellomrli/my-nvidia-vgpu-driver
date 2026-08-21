@@ -43,8 +43,12 @@ Six kernel modules for the target Unraid kernel plus the full userspace
 
 - **manual**: run the *Build NVIDIA vGPU driver* workflow, choose the driver
   version, Unraid kernel release and package build number
-- requires `GRID_RUN_URL` / `VGPU_RUN_URL` (official NVIDIA .run files) or
-  the files already present in `downloads/`
+- the two official NVIDIA `.run` files (grid + vgpu-kvm) are downloaded
+  automatically from the public alist mirror
+  (`https://alist.homelabproject.cc/foxipan/vGPU/`), or overridden with
+  `GRID_RUN_URL` / `VGPU_RUN_URL`
+- `nvidia-container-toolkit` + `libnvidia-container` are pulled from the
+  `driver-src-<version>` Release in this repo
 
 The package is attached to a Release whose tag equals the kernel release
 (e.g. `6.18.44-Unraid`).
@@ -52,12 +56,11 @@ The package is attached to a Release whose tag equals the kernel release
 ## Local build
 
 ```bash
-# 1. merge (needs grid-<ver>.run + vgpu-kvm-<ver>.run in downloads/)
+# 1. merge (downloads grid-<ver>.run + vgpu-kvm-<ver>.run from alist)
 ./scripts/merge-driver.sh --version 535.309.01
 
 # 2. build + package (needs a Linux box with gcc/make/curl/tar/xz)
 KERNEL_RELEASE=6.18.44-Unraid VERSION=535.309.01 \
-GRID_RUN_URL=... VGPU_RUN_URL=... \
 ./scripts/build-nvidia-driver.sh
 ```
 
