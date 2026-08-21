@@ -1,4 +1,4 @@
-# my-vgpu-driver
+# my-nvidia-vgpu-driver
 
 NVIDIA vGPU (**Merged**) driver for **Unraid**, built from the official NVIDIA
 Linux driver packages and packaged as a Slackware `.txz` that installs

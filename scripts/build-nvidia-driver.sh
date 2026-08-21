@@ -131,7 +131,7 @@ done
 # --- container toolkit (official NVIDIA binaries mirrored on this repo) ---
 CTK_TAR="$DL_DIR/nvidia-container-toolkit.tar.gz"
 LNC_TAR="$DL_DIR/libnvidia-container.tar.gz"
-TOOLKIT_BASE="https://github.com/hellomrli/my-vgpu-driver/releases/download/driver-src-${VERSION}"
+TOOLKIT_BASE="https://github.com/hellomrli/my-nvidia-vgpu-driver/releases/download/driver-src-${VERSION}"
 if [ ! -s "$CTK_TAR" ]; then
   log "Downloading nvidia-container-toolkit"
   curl -L --fail --retry 3 -o "$CTK_TAR.tmp" "$TOOLKIT_BASE/nvidia-container-toolkit.tar.gz"
