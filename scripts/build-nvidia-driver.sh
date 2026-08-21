@@ -80,6 +80,40 @@ if [ ! -d "$MERGED_DIR/kernel" ]; then
 fi
 [ -d "$MERGED_DIR/kernel" ] || die "Merged tree missing"
 
+# ---------- 1b. vgpu_unlock kernel patch (consumer GPU unlock) ----------
+# The LD_PRELOAD lib (libvgpu_unlock_rs.so) is only the userspace half. The
+# kernel half hooks nv-kernel.o: vgpu_unlock_hooks.c is #included into
+# os-interface.c and kern.ld relocates nv-kernel.o's .rodata into .data so the
+# hook can rewrite the vGPU config magic at runtime. Both files are committed
+# to tools/vgpu_unlock/ (hooks.c already carries the 535.x magic adaptation).
+UNLOCK_HOOKS_C="$ROOT_DIR/tools/vgpu_unlock/vgpu_unlock_hooks.c"
+UNLOCK_KERN_LD="$ROOT_DIR/tools/vgpu_unlock/kern.ld"
+[ -s "$UNLOCK_HOOKS_C" ] || die "Missing $UNLOCK_HOOKS_C (committed to the repo tools/vgpu_unlock/ dir)"
+[ -s "$UNLOCK_KERN_LD" ] || die "Missing $UNLOCK_KERN_LD (committed to the repo tools/vgpu_unlock/ dir)"
+
+mkdir -p "$MERGED_DIR/kernel/unlock"
+cp -a "$UNLOCK_HOOKS_C" "$MERGED_DIR/kernel/unlock/vgpu_unlock_hooks.c"
+cp -a "$UNLOCK_KERN_LD" "$MERGED_DIR/kernel/nvidia/kern.ld"
+
+OS_IFACE="$MERGED_DIR/kernel/nvidia/os-interface.c"
+[ -f "$OS_IFACE" ] || die "Missing kernel/nvidia/os-interface.c in merged tree"
+if grep -q 'vgpu_unlock_hooks.c' "$OS_IFACE"; then
+  log "vgpu_unlock hooks already included in os-interface.c"
+elif grep -q 'nv-time.h' "$OS_IFACE"; then
+  sed -i 's:^\(#include "nv-time\.h"\):\1\n#include "../unlock/vgpu_unlock_hooks.c":' "$OS_IFACE"
+else
+  # fallback: insert right after the first #include line
+  sed -i '0,/^#include/s//#include "..\/unlock\/vgpu_unlock_hooks.c"\n&/' "$OS_IFACE"
+fi
+grep -q 'vgpu_unlock_hooks.c' "$OS_IFACE" || die "Failed to include vgpu_unlock_hooks.c in os-interface.c"
+
+KBUILD_MAIN="$MERGED_DIR/kernel/nvidia/nvidia.Kbuild"
+[ -f "$KBUILD_MAIN" ] || die "Missing kernel/nvidia/nvidia.Kbuild in merged tree"
+if ! grep -q 'kern.ld' "$KBUILD_MAIN"; then
+  printf 'ldflags-y += -T $(src)/nvidia/kern.ld\n' >> "$KBUILD_MAIN"
+fi
+log "vgpu_unlock kernel patch applied"
+
 # ---------- 2. kernel tree ----------
 need_cmd curl
 need_cmd tar
@@ -149,6 +183,15 @@ chmod 755 "$STAGE/usr/bin/mdevctl"
 mkdir -p "$STAGE/etc/mdevctl.d" \
          "$STAGE/usr/lib/mdevctl/scripts.d/callouts" \
          "$STAGE/usr/lib/mdevctl/scripts.d/notifiers"
+
+# --- vgpu_unlock-rs (userspace LD_PRELOAD hook for consumer GPU unlock) ---
+# Prebuilt with cargo 1.97 / glibc 2.43 (matches Unraid); committed to tools/.
+# rc.vgpu loads it via LD_PRELOAD when the unlock setting is enabled.
+UNLOCK_LIB="$ROOT_DIR/tools/libvgpu_unlock_rs.so"
+[ -s "$UNLOCK_LIB" ] || die "Missing $UNLOCK_LIB (committed to the repo tools/ dir)"
+mkdir -p "$STAGE/usr/local/lib"
+cp -a "$UNLOCK_LIB" "$STAGE/usr/local/lib/libvgpu_unlock_rs.so"
+chmod 755 "$STAGE/usr/local/lib/libvgpu_unlock_rs.so"
 
 # --- NVIDIA userspace from the merged tree (== grid base + vgpu overlay) ---
 # binaries -> usr/bin
