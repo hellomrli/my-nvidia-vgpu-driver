@@ -36,9 +36,9 @@ out/nvidia-<版本>-<内核>-Unraid-<构建号>.txz   (+ .md5)
 - **手动触发**：运行 *Build NVIDIA vGPU driver* 工作流，填写驱动版本、Unraid 内核版本和构建号
 - 两个官方 NVIDIA `.run` 文件（grid + vgpu-kvm）自动从公开 alist 镜像下载
   （`https://alist.homelabproject.cc/foxipan/vGPU/`），也可用 `GRID_RUN_URL` / `VGPU_RUN_URL` 覆盖
-- `nvidia-container-toolkit` + `libnvidia-container` 从本仓库 `driver-src-<版本>` Release 拉取
+- `nvidia-container-toolkit` + `libnvidia-container` 从仓库本体的 `tools/` 目录读取（开源组件，随仓库提交）
 
-构建产物附加到 **tag 等于内核版本** 的 Release（如 `6.18.44-Unraid`、`6.18.43-Unraid`）。
+构建产物附加到 **tag 等于内核版本** 的 Release（如 `6.18.44-Unraid`、`6.18.43-Unraid`）。**Release 只包含编译好的驱动包，不包含任何官方源码或 .run 文件。**
 
 ## 本地构建
 
@@ -64,4 +64,4 @@ KERNEL_RELEASE=6.18.44-Unraid VERSION=535.309.01 \
 
 当前构建：**535.309.01**（vGPU 16.14，支持 Tesla P4 等 Pascal 卡）for **6.18.44-Unraid / 6.18.43-Unraid**（tag 与内核版本一致）。
 
-> 注意：`driver-src-<版本>` Release 存放云编译所需的官方 .run 文件（需要 NVIDIA 企业账号才能从官网下载，这里做镜像），驱动包本身在 `<内核版本>` Release 中。
+> Release 中仅包含编译完成的驱动包（`.txz` + `.md5`），不含任何官方驱动源码或 .run 文件。云编译所需的官方 .run 从 alist 镜像获取，开源容器工具随仓库提交。

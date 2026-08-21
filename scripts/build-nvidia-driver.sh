@@ -128,20 +128,13 @@ for m in $MODULES; do
   cp "$MERGED_DIR/kernel/$m.ko" "$MOD_DEST/"
 done
 
-# --- container toolkit (official NVIDIA binaries mirrored on this repo) ---
-CTK_TAR="$DL_DIR/nvidia-container-toolkit.tar.gz"
-LNC_TAR="$DL_DIR/libnvidia-container.tar.gz"
-TOOLKIT_BASE="https://github.com/hellomrli/my-nvidia-vgpu-driver/releases/download/driver-src-${VERSION}"
-if [ ! -s "$CTK_TAR" ]; then
-  log "Downloading nvidia-container-toolkit"
-  curl -L --fail --retry 3 -o "$CTK_TAR.tmp" "$TOOLKIT_BASE/nvidia-container-toolkit.tar.gz"
-  mv "$CTK_TAR.tmp" "$CTK_TAR"
-fi
-if [ ! -s "$LNC_TAR" ]; then
-  log "Downloading libnvidia-container"
-  curl -L --fail --retry 3 -o "$LNC_TAR.tmp" "$TOOLKIT_BASE/libnvidia-container.tar.gz"
-  mv "$LNC_TAR.tmp" "$LNC_TAR"
-fi
+# --- container toolkit (open-source; committed to the repo tools/ dir) ---
+# The official .run files come from the alist mirror above; the container
+# toolkit lives in this repository so Releases stay clean (driver only).
+CTK_TAR="$ROOT_DIR/tools/nvidia-container-toolkit.tar.gz"
+LNC_TAR="$ROOT_DIR/tools/libnvidia-container.tar.gz"
+[ -s "$CTK_TAR" ] || die "Missing $CTK_TAR (committed to the repo tools/ dir)"
+[ -s "$LNC_TAR" ] || die "Missing $LNC_TAR (committed to the repo tools/ dir)"
 tar -xzf "$CTK_TAR" -C "$STAGE"
 tar -xzf "$LNC_TAR" -C "$STAGE"
 
