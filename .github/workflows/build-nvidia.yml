@@ -1,0 +1,77 @@
+name: Build NVIDIA vGPU (Merged) driver for Unraid
+
+on:
+  workflow_dispatch:
+    inputs:
+      driver_version:
+        description: 'NVIDIA driver version (e.g. 535.309.01)'
+        required: false
+        default: '535.309.01'
+        type: string
+      kernel_release:
+        description: 'Unraid kernel release (e.g. 6.18.44-Unraid)'
+        required: false
+        default: '6.18.44-Unraid'
+        type: string
+      package_build:
+        description: 'Package build number'
+        required: false
+        default: '1'
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nvidia-vgpu-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      TZ: UTC
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates curl flex git kmod \
+            libelf-dev make tar xz-utils
+          rm -rf /var/lib/apt/lists/*
+          gcc --version | head -1
+          nproc
+
+      - name: Build NVIDIA merged driver package
+        shell: bash
+        env:
+          VERSION: ${{ inputs.driver_version }}
+          KERNEL_RELEASE: ${{ inputs.kernel_release }}
+          TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
+          PACKAGE_BUILD: ${{ inputs.package_build }}
+        run: |
+          set -euo pipefail
+          export TARGET_KERNEL_VERSION="${KERNEL_RELEASE%-Unraid}"
+          ./scripts/build-nvidia-driver.sh
+
+      - name: Publish Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KERNEL_RELEASE: ${{ inputs.kernel_release }}
+        run: |
+          set -euo pipefail
+          pkg="$(ls out/nvidia-*.txz | head -1)"
+          pkg_base="$(basename "$pkg")"
+          release_tag="${KERNEL_RELEASE}"
+          gh release create "$release_tag" "$pkg" "$pkg.md5" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "NVIDIA vGPU (Merged) for ${KERNEL_RELEASE}" \
+            --notes "MERGED driver (vGPU + GRID) ${{ inputs.driver_version }} for ${KERNEL_RELEASE}" \
+            || gh release upload "$release_tag" "$pkg" "$pkg.md5" --repo "$GITHUB_REPOSITORY" --clobber
