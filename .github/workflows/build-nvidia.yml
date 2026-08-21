@@ -30,6 +30,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    container:
+      # GCC 15 matches the official Unraid kernel toolchain; the 6.18 kernel
+      # requires -fmin-function-alignment (gcc >= 14).
+      image: gcc:15.3.0
     env:
       DEBIAN_FRONTEND: noninteractive
       TZ: UTC
@@ -40,11 +44,11 @@ jobs:
       - name: Install build dependencies
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             bc bison build-essential ca-certificates curl flex git kmod \
             libelf-dev make tar xz-utils
-          sudo rm -rf /var/lib/apt/lists/*
+          rm -rf /var/lib/apt/lists/*
           gcc --version | head -1
           nproc
 
@@ -55,6 +59,10 @@ jobs:
           KERNEL_RELEASE: ${{ inputs.kernel_release }}
           TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
           PACKAGE_BUILD: ${{ inputs.package_build }}
+          # official .run files are not publicly downloadable; they are stored
+          # as assets of the driver-src-<version> Release in this repo
+          GRID_RUN_URL: https://github.com/hellomrli/my-vgpu-driver/releases/download/driver-src-${{ inputs.driver_version }}/grid-${{ inputs.driver_version }}.run
+          VGPU_RUN_URL: https://github.com/hellomrli/my-vgpu-driver/releases/download/driver-src-${{ inputs.driver_version }}/vgpu-kvm-${{ inputs.driver_version }}.run
         run: |
           set -euo pipefail
           export TARGET_KERNEL_VERSION="${KERNEL_RELEASE%-Unraid}"
