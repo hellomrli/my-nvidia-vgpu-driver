@@ -67,11 +67,19 @@ log "Latest driver: $driver_version (windows $windows_version, dir $pkg_dir)"
 
 # ---------- 2. latest ich777/unraid_kernel release ----------
 log "Querying $KERNEL_REPO releases"
-latest_kernel="$(curl -fsS --retry 3 --retry-delay 2 \
-  "https://api.github.com/repos/$KERNEL_REPO/releases?per_page=1" \
-  | jq -r '.[0].tag_name // empty')"
+# GitHub API can transiently 504/503; retry a few times with a pause, then
+# give up gracefully (the next daily run will pick it up).
+latest_kernel=""
+for attempt in 1 2 3 4 5; do
+  latest_kernel="$(curl -sS --retry 2 --retry-delay 3 \
+    "https://api.github.com/repos/$KERNEL_REPO/releases?per_page=1" \
+    | jq -r '.[0].tag_name // empty' 2>/dev/null || true)"
+  [ -n "$latest_kernel" ] && break
+  log "kernel release query failed (attempt $attempt), retrying in 10s"
+  sleep 10
+done
 if [ -z "$latest_kernel" ]; then
-  log "ERROR: could not read latest kernel release tag"
+  log "ERROR: could not read latest kernel release tag after retries"
   exit 1
 fi
 log "Latest kernel: $latest_kernel"
@@ -82,24 +90,25 @@ reason="up-to-date"
 
 if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
   log "Comparing against existing Releases in $GITHUB_REPOSITORY"
-  rel="$(curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" \
-    "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$latest_kernel" 2>/dev/null \
-    | jq -r '.tag_name // empty' 2>/dev/null || true)"
+  # 404 = this kernel has no release yet (legitimate "build needed" signal);
+  # 5xx = transient API failure (do NOT misjudge as needing a build).
+  code="$(curl -sS -o /tmp/rel.json -w '%{http_code}' \
+    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$latest_kernel" 2>/dev/null || true)"
 
-  if [ -z "$rel" ]; then
-    # no release for this kernel yet -> build for the new kernel
-    build_needed="true"
-    reason="new kernel $latest_kernel (no release)"
-  else
+  if [ "$code" = "200" ]; then
     # release exists; check whether it already carries this driver version
-    has_driver="$(curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" \
-      "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$latest_kernel" \
-      | jq -r --arg d "$driver_version" \
-        '.assets[].name | select(startswith("nvidia-" + $d + "-")) | .' 2>/dev/null | head -1 || true)"
+    has_driver="$(jq -r --arg d "$driver_version" \
+      '.assets[].name | select(startswith("nvidia-" + $d + "-")) | .' /tmp/rel.json 2>/dev/null | head -1 || true)"
     if [ -z "$has_driver" ]; then
       build_needed="true"
       reason="new driver $driver_version for $latest_kernel (not in release)"
     fi
+  elif [ "$code" = "404" ]; then
+    build_needed="true"
+    reason="new kernel $latest_kernel (no release)"
+  else
+    reason="release check failed (http $code); will retry next run"
   fi
 else
   # without GitHub context we cannot compare; report the latest and let the caller decide
