@@ -23,6 +23,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-535.309.01}"
 # alist vGPU branch directory for this driver version (535.309.01 == 16.14)
 ALIST_VGPU_BRANCH="${ALIST_VGPU_BRANCH:-16.14}"
+# Windows driver version embedded in the alist directory name
+# (NVIDIA-GRID-Linux-KVM-<VERSION>-<ALIST_WINVER>)
+ALIST_WINVER="${ALIST_WINVER:-539.72}"
 TARGET_KERNEL_VERSION="${TARGET_KERNEL_VERSION:-6.18.44}"
 KERNEL_RELEASE="${KERNEL_RELEASE:-${TARGET_KERNEL_VERSION}-Unraid}"
 JOBS="${JOBS:-$(nproc --all)}"
@@ -33,7 +36,7 @@ KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-}"
 #   https://alist.homelabproject.cc/foxipan/vGPU/<branch>/
 # The merged driver needs BOTH the grid (standard Linux) and the vgpu-kvm
 # package; they are the base and the vGPU component source respectively.
-ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/NVIDIA-GRID-Linux-KVM-${VERSION}-539.72}"
+ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/NVIDIA-GRID-Linux-KVM-${VERSION}-${ALIST_WINVER}}"
 GRID_RUN_URL="${GRID_RUN_URL:-${ALIST_BASE}/Guest_Drivers/NVIDIA-Linux-x86_64-${VERSION}-grid.run}"
 VGPU_RUN_URL="${VGPU_RUN_URL:-${ALIST_BASE}/Host_Drivers/NVIDIA-Linux-x86_64-${VERSION}-vgpu-kvm.run}"
 CC="${CC:-gcc}"

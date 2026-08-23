@@ -8,6 +8,16 @@ on:
         required: false
         default: '535.309.01'
         type: string
+      vgpu_branch:
+        description: 'alist vGPU branch directory (e.g. 16.14)'
+        required: false
+        default: '16.14'
+        type: string
+      windows_version:
+        description: 'Windows driver version in the alist dir name (e.g. 539.72)'
+        required: false
+        default: '539.72'
+        type: string
       kernel_release:
         description: 'Unraid kernel release (e.g. 6.18.44-Unraid)'
         required: false
@@ -56,6 +66,8 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ inputs.driver_version }}
+          ALIST_VGPU_BRANCH: ${{ inputs.vgpu_branch }}
+          ALIST_WINVER: ${{ inputs.windows_version }}
           KERNEL_RELEASE: ${{ inputs.kernel_release }}
           TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
           PACKAGE_BUILD: ${{ inputs.package_build }}

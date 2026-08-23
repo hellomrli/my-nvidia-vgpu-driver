@@ -1,0 +1,70 @@
+name: Check NVIDIA vGPU / Unraid kernel updates
+
+on:
+  schedule:
+    # daily 01:00 UTC (09:00 CST) - checks the official vGPU 16 line and
+    # ich777/unraid_kernel for new releases
+    - cron: '0 1 * * *'
+  workflow_dispatch: {}   # allow a manual check
+
+permissions:
+  contents: read
+  actions: write          # to dispatch the build workflow
+
+concurrency:
+  group: vgpu-update-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check for updates
+        id: check
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="$(./scripts/check-updates.sh)"
+          echo "$result" | tee /tmp/check-result.json
+
+          build_needed="$(echo "$result" | jq -r '.build_needed')"
+          echo "build_needed=$build_needed" >> "$GITHUB_OUTPUT"
+          echo "driver_version=$(echo "$result" | jq -r '.driver_version')" >> "$GITHUB_OUTPUT"
+          echo "vgpu_branch=$(echo "$result" | jq -r '.vgpu_branch')" >> "$GITHUB_OUTPUT"
+          echo "windows_version=$(echo "$result" | jq -r '.windows_version')" >> "$GITHUB_OUTPUT"
+          echo "kernel_release=$(echo "$result" | jq -r '.kernel_release')" >> "$GITHUB_OUTPUT"
+          echo "reason=$(echo "$result" | jq -r '.reason')" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger driver build
+        if: steps.check.outputs.build_needed == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build-nvidia.yml/dispatches"
+          payload="$(jq -n \
+            --arg d "${{ steps.check.outputs.driver_version }}" \
+            --arg b "${{ steps.check.outputs.vgpu_branch }}" \
+            --arg w "${{ steps.check.outputs.windows_version }}" \
+            --arg k "${{ steps.check.outputs.kernel_release }}" \
+            '{ref:"master", inputs:{driver_version:$d, vgpu_branch:$b, windows_version:$w, kernel_release:$k, package_build:"1"}}')"
+          echo "Dispatching build: ${{ steps.check.outputs.reason }}"
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            -d "$payload" "$api"
+          echo "Build workflow dispatched for driver ${{ steps.check.outputs.driver_version }} / kernel ${{ steps.check.outputs.kernel_release }}"
+
+      - name: Report (no build needed)
+        if: steps.check.outputs.build_needed != 'true'
+        shell: bash
+        run: |
+          echo "Up to date. ${{ steps.check.outputs.reason }}"
+          echo "driver=${{ steps.check.outputs.driver_version }} kernel=${{ steps.check.outputs.kernel_release }}"
