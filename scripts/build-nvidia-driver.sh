@@ -31,7 +31,12 @@ KERNEL_RELEASE="${KERNEL_RELEASE:-${TARGET_KERNEL_VERSION}-Unraid}"
 JOBS="${JOBS:-$(nproc --all)}"
 PACKAGE_BUILD="${PACKAGE_BUILD:-1}"
 KERNEL_ARCHIVE_URL="${KERNEL_ARCHIVE_URL:-https://github.com/ich777/unraid_kernel/releases/download/${KERNEL_RELEASE}/linux-${KERNEL_RELEASE}.tar.xz}"
-KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-}"
+KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-618df8d001e9f98b95306eb2eac4cb776d0bf4b98061f0f4cedbc10c1468858d}"
+# Pinned SHA256 of the official .run files (defaults match VERSION=535.309.01;
+# override both VERSION and these when building another driver version - an
+# empty value disables the check)
+GRID_RUN_SHA256="${GRID_RUN_SHA256:-a5fa966d2de4953b4e7cb8016064bc23a8f9a0cd23f56e10cd122a785426d5ff}"
+VGPU_RUN_SHA256="${VGPU_RUN_SHA256:-04a60a8436324e0edea6ebcf428b3c04e31c1146d80a2b2712c5f36aa705e053}"
 # Official NVIDIA .run files are mirrored on the alist vGPU share:
 #   https://alist.homelabproject.cc/foxipan/vGPU/<branch>/
 # The merged driver needs BOTH the grid (standard Linux) and the vgpu-kvm
@@ -75,6 +80,15 @@ if [ ! -s "$VGPU_RUN" ]; then
   log "Downloading vgpu-kvm driver from alist mirror"
   curl -L --fail --retry 3 --retry-delay 2 -o "$VGPU_RUN.tmp" "$VGPU_RUN_URL"
   mv "$VGPU_RUN.tmp" "$VGPU_RUN"
+fi
+# verify the .run files against the pinned SHA256 (supply-chain check)
+if [ -n "$GRID_RUN_SHA256" ]; then
+  echo "$GRID_RUN_SHA256  $GRID_RUN" | sha256sum -c - >/dev/null \
+    || die "grid .run SHA256 mismatch - override GRID_RUN_SHA256 when building a different version"
+fi
+if [ -n "$VGPU_RUN_SHA256" ]; then
+  echo "$VGPU_RUN_SHA256  $VGPU_RUN" | sha256sum -c - >/dev/null \
+    || die "vgpu-kvm .run SHA256 mismatch - override VGPU_RUN_SHA256 when building a different version"
 fi
 if [ ! -d "$MERGED_DIR/kernel" ]; then
   log "Building merged driver source tree"
@@ -172,8 +186,14 @@ CTK_TAR="$ROOT_DIR/tools/nvidia-container-toolkit.tar.gz"
 LNC_TAR="$ROOT_DIR/tools/libnvidia-container.tar.gz"
 [ -s "$CTK_TAR" ] || die "Missing $CTK_TAR (committed to the repo tools/ dir)"
 [ -s "$LNC_TAR" ] || die "Missing $LNC_TAR (committed to the repo tools/ dir)"
-tar -xzf "$CTK_TAR" -C "$STAGE"
-tar -xzf "$LNC_TAR" -C "$STAGE"
+# verify all committed tools binaries against the manifest
+( cd "$ROOT_DIR/tools" && sha256sum -c --quiet SHA256SUMS ) \
+  || die "tools/SHA256SUMS verification failed - update the manifest when replacing a tools binary"
+# exclude=etc/docker: the tarballs must never carry a daemon.json - it would
+# overwrite the user's Docker config on install (runtime config is done by
+# nvidia-ctk / rc.vgpu instead)
+tar -xzf "$CTK_TAR" -C "$STAGE" --exclude='./etc/docker'
+tar -xzf "$LNC_TAR" -C "$STAGE" --exclude='./etc/docker'
 
 # --- mdevctl (mediated device management; prebuilt, committed to tools/) ---
 # Unraid has no mdevctl package, so ship it with the driver. It needs three
@@ -224,8 +244,16 @@ if ls "$MERGED_DIR"/firmware/gsp_*.bin >/dev/null 2>&1; then
   cp -a "$MERGED_DIR"/firmware/gsp_*.bin "$STAGE/lib/firmware/nvidia/"
 fi
 
-# soname symlinks (layout validated against the released package)
-liblink() { ln -sfn "$2" "$STAGE/usr/lib64/$1"; }
+# soname symlinks (layout validated against the released package).
+# liblink skips (with a warning) when the target file does not exist so a
+# hard-coded soname cannot produce dangling links with a different driver ver.
+liblink() {
+  if [ -e "$STAGE/usr/lib64/$2" ]; then
+    ln -sfn "$2" "$STAGE/usr/lib64/$1"
+  else
+    log "WARNING: soname link $1 -> $2 skipped (target missing in merged tree)"
+  fi
+}
 liblink libcuda.so                    libcuda.so.${VERSION}
 liblink libcuda.so.1                  libcuda.so.${VERSION}
 liblink libEGL.so                     libEGL.so.${VERSION}
@@ -256,8 +284,10 @@ liblink libnvidia-vgpu.so             libnvidia-vgpu.so.${VERSION}
 liblink libnvidia-vgxcfg.so           libnvidia-vgxcfg.so.${VERSION}
 liblink libnvidia-vulkan-producer.so.1 libnvidia-vulkan-producer.so.${VERSION}
 liblink libOpenCL.so.1                libOpenCL.so.1.0.0
-ln -sfn libnvidia-vgpu.so.${VERSION}  "$STAGE/usr/lib/nvidia/libnvidia-vgpu.so"
-ln -sfn libnvidia-vgxcfg.so.${VERSION} "$STAGE/usr/lib/nvidia/libnvidia-vgxcfg.so"
+[ -e "$STAGE/usr/lib/nvidia/libnvidia-vgpu.so.${VERSION}" ] && \
+  ln -sfn libnvidia-vgpu.so.${VERSION} "$STAGE/usr/lib/nvidia/libnvidia-vgpu.so"
+[ -e "$STAGE/usr/lib/nvidia/libnvidia-vgxcfg.so.${VERSION}" ] && \
+  ln -sfn libnvidia-vgxcfg.so.${VERSION} "$STAGE/usr/lib/nvidia/libnvidia-vgxcfg.so"
 
 # --- config files ---
 mkdir -p "$STAGE/etc/nvidia" "$STAGE/etc/vgpu_unlock" "$STAGE/etc/glvnd/egl_vendor.d" \
