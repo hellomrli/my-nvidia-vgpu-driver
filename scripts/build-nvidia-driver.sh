@@ -363,7 +363,8 @@ EOF
 # ---------- 5. package .txz ----------
 log "Packaging ${PKG_NAME}.txz"
 tar -cJf "$OUT_DIR/${PKG_NAME}.txz" --owner=root --group=root -C "$STAGE" .
-md5sum "$OUT_DIR/${PKG_NAME}.txz" > "$OUT_DIR/${PKG_NAME}.txz.md5"
+# basename-only .md5 (an absolute path here breaks `md5sum -c` outside CI)
+( cd "$OUT_DIR" && md5sum "${PKG_NAME}.txz" > "${PKG_NAME}.txz.md5" )
 
 {
   echo "driver:  $VERSION"
