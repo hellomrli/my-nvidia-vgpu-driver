@@ -31,7 +31,17 @@ KERNEL_RELEASE="${KERNEL_RELEASE:-${TARGET_KERNEL_VERSION}-Unraid}"
 JOBS="${JOBS:-$(nproc --all)}"
 PACKAGE_BUILD="${PACKAGE_BUILD:-1}"
 KERNEL_ARCHIVE_URL="${KERNEL_ARCHIVE_URL:-https://github.com/ich777/unraid_kernel/releases/download/${KERNEL_RELEASE}/linux-${KERNEL_RELEASE}.tar.xz}"
-KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-618df8d001e9f98b95306eb2eac4cb776d0bf4b98061f0f4cedbc10c1468858d}"
+# Per-release SHA256 of the ich777 kernel archive (an archive hash is only
+# valid for its own kernel!). Unknown releases fall back to no check (a
+# warning is logged) so the daily auto-build for new kernels keeps working.
+case "${KERNEL_RELEASE}" in
+  6.18.44-Unraid) DEFAULT_KERNEL_SHA256="618df8d001e9f98b95306eb2eac4cb776d0bf4b98061f0f4cedbc10c1468858d" ;;
+  6.18.45-Unraid) DEFAULT_KERNEL_SHA256="365dee16bbd9c505d36a0d0a1a2bc63723f8a8d55b2f7c7991d806a4c849df7b" ;;
+  6.18.46-Unraid) DEFAULT_KERNEL_SHA256="e8969f6a5d31106ae5ebf821ba128e043dcda78bc5f1f1a6344a8e46c9c9e280" ;;
+  6.18.47-Unraid) DEFAULT_KERNEL_SHA256="72822aea43a7d6dab3ae7a8489481a583504896927c1ce7117df8ab1b46d173f" ;;
+  *)              DEFAULT_KERNEL_SHA256="" ;;
+esac
+KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-${DEFAULT_KERNEL_SHA256}}"
 # Pinned SHA256 of the official .run files (defaults match VERSION=535.309.01;
 # override both VERSION and these when building another driver version - an
 # empty value disables the check)
