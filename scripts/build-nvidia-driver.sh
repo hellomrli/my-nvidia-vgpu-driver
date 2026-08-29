@@ -21,11 +21,23 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---------- config (overridable via environment) ----------
 VERSION="${VERSION:-535.309.01}"
+# vGPU host driver version == VERSION. Some branches ship a grid guest driver
+# with a DIFFERENT version than the vgpu-kvm host driver (e.g. 19.6:
+# vgpu-kvm 580.178.05, grid 580.178.04); GRID_VERSION covers that.
+GRID_VERSION="${GRID_VERSION:-${VERSION}}"
 # alist vGPU branch directory for this driver version (535.309.01 == 16.14)
 ALIST_VGPU_BRANCH="${ALIST_VGPU_BRANCH:-16.14}"
 # Windows driver version embedded in the alist directory name
 # (NVIDIA-GRID-Linux-KVM-<VERSION>-<ALIST_WINVER>)
 ALIST_WINVER="${ALIST_WINVER:-539.72}"
+# Explicit package dir name for 3-number layouts, e.g. 19.6 ships
+# NVIDIA-GRID-Linux-KVM-580.178.05-580.178.04-582.78 (host-grid-windows).
+# When set it also derives GRID_VERSION if not given.
+ALIST_PKG_DIR="${ALIST_PKG_DIR:-}"
+if [ -n "$ALIST_PKG_DIR" ] && [ "$GRID_VERSION" = "$VERSION" ]; then
+  g="$(printf '%s' "$ALIST_PKG_DIR" | sed -nE 's/^NVIDIA-GRID-Linux-KVM-[0-9.]+-([0-9.]+)-[0-9.]+$/\1/p')"
+  [ -n "$g" ] && GRID_VERSION="$g"
+fi
 TARGET_KERNEL_VERSION="${TARGET_KERNEL_VERSION:-6.18.44}"
 KERNEL_RELEASE="${KERNEL_RELEASE:-${TARGET_KERNEL_VERSION}-Unraid}"
 JOBS="${JOBS:-$(nproc --all)}"
@@ -42,23 +54,44 @@ case "${KERNEL_RELEASE}" in
   *)              DEFAULT_KERNEL_SHA256="" ;;
 esac
 KERNEL_ARCHIVE_SHA256="${KERNEL_ARCHIVE_SHA256:-${DEFAULT_KERNEL_SHA256}}"
-# Pinned SHA256 of the official .run files (defaults match VERSION=535.309.01;
-# override both VERSION and these when building another driver version - an
-# empty value disables the check)
-GRID_RUN_SHA256="${GRID_RUN_SHA256:-a5fa966d2de4953b4e7cb8016064bc23a8f9a0cd23f56e10cd122a785426d5ff}"
-VGPU_RUN_SHA256="${VGPU_RUN_SHA256:-04a60a8436324e0edea6ebcf428b3c04e31c1146d80a2b2712c5f36aa705e053}"
+# Pinned SHA256 of the official .run files (supply-chain check). The hash is
+# per driver version; unknown versions fall back to no check (logged).
+case "${VERSION}" in
+  535.309.01)
+    DEFAULT_GRID_RUN_SHA256="a5fa966d2de4953b4e7cb8016064bc23a8f9a0cd23f56e10cd122a785426d5ff"
+    DEFAULT_VGPU_RUN_SHA256="04a60a8436324e0edea6ebcf428b3c04e31c1146d80a2b2712c5f36aa705e053" ;;
+  580.178.05)
+    DEFAULT_GRID_RUN_SHA256="6513b2bd6431b502ce686c6f546b1947b7577107a6132cebb80fb08a9540263f"
+    DEFAULT_VGPU_RUN_SHA256="c084ebcb98b2d166309da3b59c64ab0db5df0418eb602e4b51c65939276e526d" ;;
+  *) DEFAULT_GRID_RUN_SHA256=""; DEFAULT_VGPU_RUN_SHA256="" ;;
+esac
+GRID_RUN_SHA256="${GRID_RUN_SHA256:-${DEFAULT_GRID_RUN_SHA256}}"
+VGPU_RUN_SHA256="${VGPU_RUN_SHA256:-${DEFAULT_VGPU_RUN_SHA256}}"
 # Official NVIDIA .run files are mirrored on the alist vGPU share:
 #   https://alist.homelabproject.cc/foxipan/vGPU/<branch>/
 # The merged driver needs BOTH the grid (standard Linux) and the vgpu-kvm
 # package; they are the base and the vGPU component source respectively.
-ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/NVIDIA-GRID-Linux-KVM-${VERSION}-${ALIST_WINVER}}"
-GRID_RUN_URL="${GRID_RUN_URL:-${ALIST_BASE}/Guest_Drivers/NVIDIA-Linux-x86_64-${VERSION}-grid.run}"
+if [ -n "$ALIST_PKG_DIR" ]; then
+  ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/${ALIST_PKG_DIR}}"
+else
+  ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/NVIDIA-GRID-Linux-KVM-${VERSION}-${ALIST_WINVER}}"
+fi
+GRID_RUN_URL="${GRID_RUN_URL:-${ALIST_BASE}/Guest_Drivers/NVIDIA-Linux-x86_64-${GRID_VERSION}-grid.run}"
 VGPU_RUN_URL="${VGPU_RUN_URL:-${ALIST_BASE}/Host_Drivers/NVIDIA-Linux-x86_64-${VERSION}-vgpu-kvm.run}"
 CC="${CC:-gcc}"
 HOSTCC="${HOSTCC:-$CC}"
 CXX="${CXX:-g++}"
 HOSTCXX="${HOSTCXX:-$CXX}"
 export CC HOSTCC CXX HOSTCXX
+# vgpu_unlock kernel patch hooks the 535.x vGPU config magic; the magic values
+# are not adapted to other branches, so "auto" applies it only on 535.x.
+# Force with UNLOCK_PATCH=1/0.
+UNLOCK_PATCH="${UNLOCK_PATCH:-auto}"
+case "$UNLOCK_PATCH" in
+  auto) if [ "${VERSION%%.*}" = "535" ]; then UNLOCK_PATCH=1; else UNLOCK_PATCH=0; fi ;;
+  1|0) ;;
+  *) die "UNLOCK_PATCH must be auto, 1 or 0" ;;
+esac
 
 DL_DIR="${DL_DIR:-$ROOT_DIR/downloads}"
 BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build}"
@@ -79,7 +112,7 @@ kmake() {
 # ---------- 1. merged source tree ----------
 # make sure the two official .run files are present (alist mirror by default)
 need_cmd curl
-GRID_RUN="$DL_DIR/grid-${VERSION}.run"
+GRID_RUN="$DL_DIR/grid-${GRID_VERSION}.run"
 VGPU_RUN="$DL_DIR/vgpu-kvm-${VERSION}.run"
 if [ ! -s "$GRID_RUN" ]; then
   log "Downloading grid driver from alist mirror"
@@ -95,14 +128,18 @@ fi
 if [ -n "$GRID_RUN_SHA256" ]; then
   echo "$GRID_RUN_SHA256  $GRID_RUN" | sha256sum -c - >/dev/null \
     || die "grid .run SHA256 mismatch - override GRID_RUN_SHA256 when building a different version"
+else
+  log "WARNING: no pinned SHA256 for grid ${GRID_VERSION} - set GRID_RUN_SHA256 to enforce"
 fi
 if [ -n "$VGPU_RUN_SHA256" ]; then
   echo "$VGPU_RUN_SHA256  $VGPU_RUN" | sha256sum -c - >/dev/null \
     || die "vgpu-kvm .run SHA256 mismatch - override VGPU_RUN_SHA256 when building a different version"
+else
+  log "WARNING: no pinned SHA256 for vgpu-kvm ${VERSION} - set VGPU_RUN_SHA256 to enforce"
 fi
 if [ ! -d "$MERGED_DIR/kernel" ]; then
   log "Building merged driver source tree"
-  DL_DIR="$DL_DIR" OUT_DIR="$BUILD_DIR" VERSION="$VERSION" \
+  DL_DIR="$DL_DIR" OUT_DIR="$BUILD_DIR" VERSION="$VERSION" GRID_VERSION="$GRID_VERSION" \
     "$ROOT_DIR/scripts/merge-driver.sh"
 fi
 [ -d "$MERGED_DIR/kernel" ] || die "Merged tree missing"
@@ -112,7 +149,8 @@ fi
 # kernel half hooks nv-kernel.o: vgpu_unlock_hooks.c is #included into
 # os-interface.c and kern.ld relocates nv-kernel.o's .rodata into .data so the
 # hook can rewrite the vGPU config magic at runtime. Both files are committed
-# to tools/vgpu_unlock/ (hooks.c already carries the 535.x magic adaptation).
+# to tools/vgpu_unlock/ (hooks.c carries the 535.x magic adaptation).
+if [ "$UNLOCK_PATCH" = "1" ]; then
 UNLOCK_HOOKS_C="$ROOT_DIR/tools/vgpu_unlock/vgpu_unlock_hooks.c"
 UNLOCK_KERN_LD="$ROOT_DIR/tools/vgpu_unlock/kern.ld"
 [ -s "$UNLOCK_HOOKS_C" ] || die "Missing $UNLOCK_HOOKS_C (committed to the repo tools/vgpu_unlock/ dir)"
@@ -140,6 +178,9 @@ if ! grep -q 'kern.ld' "$KBUILD_MAIN"; then
   printf 'ldflags-y += -T $(src)/nvidia/kern.ld\n' >> "$KBUILD_MAIN"
 fi
 log "vgpu_unlock kernel patch applied"
+else
+  log "Skipping the vgpu_unlock kernel patch (not adapted to driver ${VERSION}; native vGPU cards do not need it)"
+fi
 
 # ---------- 2. kernel tree ----------
 need_cmd curl
@@ -255,6 +296,8 @@ if ls "$MERGED_DIR"/firmware/gsp_*.bin >/dev/null 2>&1; then
 fi
 
 # soname symlinks (layout validated against the released package).
+# Grid-derived libraries carry GRID_VERSION, vgpu-specific ones VERSION
+# (they differ on branches like 19.x: 580.178.04 vs 580.178.05).
 # liblink skips (with a warning) when the target file does not exist so a
 # hard-coded soname cannot produce dangling links with a different driver ver.
 liblink() {
@@ -264,35 +307,40 @@ liblink() {
     log "WARNING: soname link $1 -> $2 skipped (target missing in merged tree)"
   fi
 }
-liblink libcuda.so                    libcuda.so.${VERSION}
-liblink libcuda.so.1                  libcuda.so.${VERSION}
-liblink libEGL.so                     libEGL.so.${VERSION}
-liblink libEGL.so.1                   libEGL.so.${VERSION}
-liblink libGL.so                      libGL.so.1.7.0
-liblink libGL.so.1                    libGL.so.1.7.0
-liblink libnvcuvid.so                 libnvcuvid.so.${VERSION}
-liblink libnvcuvid.so.1               libnvcuvid.so.${VERSION}
-liblink libnvidia-cfg.so              libnvidia-cfg.so.${VERSION}
-liblink libnvidia-cfg.so.1            libnvidia-cfg.so.${VERSION}
-liblink libnvidia-eglcore.so.1        libnvidia-eglcore.so.${VERSION}
-liblink libnvidia-encode.so           libnvidia-encode.so.${VERSION}
-liblink libnvidia-encode.so.1         libnvidia-encode.so.${VERSION}
-liblink libnvidia-fbc.so              libnvidia-fbc.so.${VERSION}
-liblink libnvidia-fbc.so.1            libnvidia-fbc.so.${VERSION}
-liblink libnvidia-glcore.so.1         libnvidia-glcore.so.${VERSION}
-liblink libnvidia-glsi.so.1           libnvidia-glsi.so.${VERSION}
-liblink libnvidia-ml.so               libnvidia-ml.so.${VERSION}
-liblink libnvidia-ml.so.1             libnvidia-ml.so.${VERSION}
-liblink libnvidia-nvvm.so.1           libnvidia-nvvm.so.${VERSION}
-liblink libnvidia-opencl.so           libnvidia-opencl.so.${VERSION}
-liblink libnvidia-opencl.so.1         libnvidia-opencl.so.${VERSION}
-liblink libnvidia-ptxjitcompiler.so   libnvidia-ptxjitcompiler.so.${VERSION}
-liblink libnvidia-ptxjitcompiler.so.1 libnvidia-ptxjitcompiler.so.${VERSION}
-liblink libnvidia-rtcore.so.1         libnvidia-rtcore.so.${VERSION}
-liblink libnvidia-tls.so.1            libnvidia-tls.so.${VERSION}
+liblink libcuda.so                    libcuda.so.${GRID_VERSION}
+liblink libcuda.so.1                  libcuda.so.${GRID_VERSION}
+liblink libEGL.so                     libEGL.so.${GRID_VERSION}
+liblink libEGL.so.1                   libEGL.so.${GRID_VERSION}
+LIBGL_REAL="$(cd "$STAGE/usr/lib64" 2>/dev/null && ls libGL.so.1.* 2>/dev/null | sort -V | tail -1)"
+if [ -n "$LIBGL_REAL" ]; then
+  liblink libGL.so                    "$LIBGL_REAL"
+  liblink libGL.so.1                  "$LIBGL_REAL"
+else
+  log "WARNING: libGL.so.1.* not found in merged tree - skipping libGL soname links"
+fi
+liblink libnvcuvid.so                 libnvcuvid.so.${GRID_VERSION}
+liblink libnvcuvid.so.1               libnvcuvid.so.${GRID_VERSION}
+liblink libnvidia-cfg.so              libnvidia-cfg.so.${GRID_VERSION}
+liblink libnvidia-cfg.so.1            libnvidia-cfg.so.${GRID_VERSION}
+liblink libnvidia-eglcore.so.1        libnvidia-eglcore.so.${GRID_VERSION}
+liblink libnvidia-encode.so           libnvidia-encode.so.${GRID_VERSION}
+liblink libnvidia-encode.so.1         libnvidia-encode.so.${GRID_VERSION}
+liblink libnvidia-fbc.so              libnvidia-fbc.so.${GRID_VERSION}
+liblink libnvidia-fbc.so.1            libnvidia-fbc.so.${GRID_VERSION}
+liblink libnvidia-glcore.so.1         libnvidia-glcore.so.${GRID_VERSION}
+liblink libnvidia-glsi.so.1           libnvidia-glsi.so.${GRID_VERSION}
+liblink libnvidia-ml.so               libnvidia-ml.so.${GRID_VERSION}
+liblink libnvidia-ml.so.1             libnvidia-ml.so.${GRID_VERSION}
+liblink libnvidia-nvvm.so.1           libnvidia-nvvm.so.${GRID_VERSION}
+liblink libnvidia-opencl.so           libnvidia-opencl.so.${GRID_VERSION}
+liblink libnvidia-opencl.so.1         libnvidia-opencl.so.${GRID_VERSION}
+liblink libnvidia-ptxjitcompiler.so   libnvidia-ptxjitcompiler.so.${GRID_VERSION}
+liblink libnvidia-ptxjitcompiler.so.1 libnvidia-ptxjitcompiler.so.${GRID_VERSION}
+liblink libnvidia-rtcore.so.1         libnvidia-rtcore.so.${GRID_VERSION}
+liblink libnvidia-tls.so.1            libnvidia-tls.so.${GRID_VERSION}
 liblink libnvidia-vgpu.so             libnvidia-vgpu.so.${VERSION}
 liblink libnvidia-vgxcfg.so           libnvidia-vgxcfg.so.${VERSION}
-liblink libnvidia-vulkan-producer.so.1 libnvidia-vulkan-producer.so.${VERSION}
+liblink libnvidia-vulkan-producer.so.1 libnvidia-vulkan-producer.so.${GRID_VERSION}
 liblink libOpenCL.so.1                libOpenCL.so.1.0.0
 [ -e "$STAGE/usr/lib/nvidia/libnvidia-vgpu.so.${VERSION}" ] && \
   ln -sfn libnvidia-vgpu.so.${VERSION} "$STAGE/usr/lib/nvidia/libnvidia-vgpu.so"

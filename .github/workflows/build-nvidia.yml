@@ -18,6 +18,11 @@ on:
         required: false
         default: '539.72'
         type: string
+      alist_pkg_dir:
+        description: 'Explicit alist package dir for 3-number layouts (e.g. NVIDIA-GRID-Linux-KVM-580.178.05-580.178.04-582.78). Overrides windows_version.'
+        required: false
+        default: ''
+        type: string
       kernel_release:
         description: 'Unraid kernel release (e.g. 6.18.44-Unraid)'
         required: false
@@ -68,6 +73,7 @@ jobs:
           VERSION: ${{ inputs.driver_version }}
           ALIST_VGPU_BRANCH: ${{ inputs.vgpu_branch }}
           ALIST_WINVER: ${{ inputs.windows_version }}
+          ALIST_PKG_DIR: ${{ inputs.alist_pkg_dir }}
           KERNEL_RELEASE: ${{ inputs.kernel_release }}
           TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
           PACKAGE_BUILD: ${{ inputs.package_build }}

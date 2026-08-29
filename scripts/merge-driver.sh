@@ -27,6 +27,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${VERSION:-535.309.01}"
+# grid guest driver version - differs from VERSION on branches like 19.x
+# (vgpu-kvm 580.178.05 vs grid 580.178.04); defaults to VERSION
+GRID_VERSION="${GRID_VERSION:-$VERSION}"
 DL_DIR="${DL_DIR:-$ROOT_DIR/downloads}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/out-merged}"
 
@@ -45,7 +48,7 @@ while [ $# -gt 0 ]; do
 done
 
 mkdir -p "$DL_DIR" "$OUT_DIR"
-GRID_RUN="$DL_DIR/grid-$VERSION.run"
+GRID_RUN="$DL_DIR/grid-$GRID_VERSION.run"
 VGPU_RUN="$DL_DIR/vgpu-kvm-$VERSION.run"
 MERGED_DIR="$OUT_DIR/merged-$VERSION"
 
@@ -85,6 +88,30 @@ rm -rf "$MERGED_DIR"
 cp -a "$GRID_X" "$MERGED_DIR"
 chmod -R u+w "$MERGED_DIR" 2>/dev/null || true
 
+# For branches where the two packages carry different builds of the RM binary
+# (e.g. 580.x: grid 580.178.04 vs vgpu 580.178.05 - same exported symbol set,
+# only build metadata differs), brand the merged tree with the vgpu-kvm binary
+# so `modinfo -F version nvidia` matches the package version.
+if [ -f "$VGPU_X/kernel/nvidia/nv-kernel.o_binary" ] && \
+   ! cmp -s "$GRID_X/kernel/nvidia/nv-kernel.o_binary" "$VGPU_X/kernel/nvidia/nv-kernel.o_binary"; then
+  cp -f "$VGPU_X/kernel/nvidia/nv-kernel.o_binary" "$MERGED_DIR/kernel/nvidia/nv-kernel.o_binary"
+  log "Using the vgpu-kvm nv-kernel.o_binary (differs from grid, same symbol set)"
+fi
+
+# Brand the merged kernel with the vgpu-kvm version string: the top-level
+# Kbuild carries NV_VERSION_STRING from the base package (grid), which differs
+# from the vgpu-kvm host version on branches like 19.x. The module version
+# must match the package name or the plugin's update logic misfires.
+if [ -f "$VGPU_X/kernel/Kbuild" ] && [ -f "$MERGED_DIR/kernel/Kbuild" ]; then
+  vver="$(grep -m1 'NV_VERSION_STRING' "$VGPU_X/kernel/Kbuild" | grep -oE '[0-9]+\.[0-9.]+' | head -1)"
+  if [ -n "$vver" ]; then
+    awk -v ver="$vver" '/NV_VERSION_STRING/ && /ccflags-y/ { sub(/[0-9]+\.[0-9.]+/, ver) } { print }' \
+      "$MERGED_DIR/kernel/Kbuild" > "$MERGED_DIR/kernel/Kbuild.tmp" \
+      && mv "$MERGED_DIR/kernel/Kbuild.tmp" "$MERGED_DIR/kernel/Kbuild"
+    log "Branding merged kernel as vgpu-kvm version $vver"
+  fi
+fi
+
 # kernel: add the vgpu-vfio driver sources + interface files from vgpu-kvm
 cp -a "$VGPU_X/kernel/nvidia-vgpu-vfio" "$MERGED_DIR/kernel/"
 cp -a "$VGPU_X/kernel/nvidia/nv-vgpu-vfio-interface.c" "$MERGED_DIR/kernel/nvidia/"
@@ -123,7 +150,15 @@ fi
 # compile the vgpu-vfio interface into nvidia.ko (as the vgpu-kvm build does)
 KBUILD="$MERGED_DIR/kernel/nvidia/nvidia-sources.Kbuild"
 if [ -f "$KBUILD" ] && ! grep -q 'nv-vgpu-vfio-interface.c' "$KBUILD"; then
-  sed -i '/NVIDIA_SOURCES += nvidia\/nv-frontend.c/i NVIDIA_SOURCES += nvidia/nv-vgpu-vfio-interface.c' "$KBUILD"
+  # robust anchor: 535 lists nv-frontend.c, 580 lists os-interface.c - fall
+  # back to appending to the source list when neither anchor exists
+  if grep -q 'nvidia/nv-frontend.c' "$KBUILD"; then
+    sed -i '/NVIDIA_SOURCES += nvidia\/nv-frontend.c/i NVIDIA_SOURCES += nvidia\/nv-vgpu-vfio-interface.c' "$KBUILD"
+  elif grep -q 'nvidia/os-interface.c' "$KBUILD"; then
+    sed -i '/NVIDIA_SOURCES += nvidia\/os-interface.c/a NVIDIA_SOURCES += nvidia\/nv-vgpu-vfio-interface.c' "$KBUILD"
+  else
+    printf 'NVIDIA_SOURCES += nvidia/nv-vgpu-vfio-interface.c\n' >> "$KBUILD"
+  fi
 fi
 
 log "Merged tree ready: $MERGED_DIR"
