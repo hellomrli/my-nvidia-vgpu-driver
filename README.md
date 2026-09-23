@@ -85,8 +85,12 @@ out/nvidia-<版本>-<内核>-Unraid-<构建号>.txz   (+ .md5)
   - `kernel_release`：目标 Unraid 内核（如 `6.18.44-Unraid`）
   - `package_build`：构建号
   - `alist_pkg_dir`：**19.x 等三段式目录必须填写**（如 `NVIDIA-GRID-Linux-KVM-580.178.05-580.178.04-582.78`，格式为 host-grid-windows，会自动推导 grid 版本）；16.x 的两段式目录留空即可（由 `windows_version` 拼出）
-- 两个官方 NVIDIA `.run` 文件（grid + vgpu-kvm）自动从公开 alist 镜像下载
-  （`https://alist.homelabproject.cc/foxipan/vGPU/`），也可用 `GRID_RUN_URL` / `VGPU_RUN_URL` 覆盖
+- 两个官方 NVIDIA `.run` 文件（grid + vgpu-kvm）按以下顺序自动获取，**任一来源可用即通过**：
+  1. `GRID_RUN_URL` / `VGPU_RUN_URL`（显式覆盖，仓库变量可配）
+  2. 公开 alist 镜像 `https://alist.homelabproject.cc/foxipan/vGPU/`
+  3. GitHub Release 镜像 `https://github.com/<RUN_MIRROR_REPO>/releases/download/<RUN_MIRROR_TAG>/grid-*.run`（默认 `sources` tag，用 `scripts/publish-run-mirror.sh` 发布）
+
+  每个来源下载后都会校验：不是 HTML 反爬页、体积不为几百 KB、签名是自解压脚本/ELF，最后比对固化的 SHA256；全部失败时报出**每个来源各自失败的原因**（2026-09 起 alist 的 `/d/`、`/p/`、`/dav/` 全部被 CrowdSec 挑战页接管，HTTP 200 返回 ~300 KiB HTML，因此 `curl --fail` 不会报错——现在会直接指出"HTML page, not the .run installer"）
 - `nvidia-container-toolkit` + `libnvidia-container` 从仓库本体的 `tools/` 目录读取（开源组件，随仓库提交，打包时按 `tools/SHA256SUMS` 校验）
 
 构建产物附加到 **tag 等于内核版本** 的 Release（如 `6.18.44-Unraid`、`6.18.47-Unraid`）。**Release 只包含编译好的驱动包，不包含任何官方源码或 .run 文件。**
@@ -95,6 +99,22 @@ out/nvidia-<版本>-<内核>-Unraid-<构建号>.txz   (+ .md5)
 
 - 官方 `.run` 文件的 SHA256 按驱动版本固化在 `build-nvidia-driver.sh` 内（535.309.01 与 580.178.04/580.178.05 已固化；未知版本告警放行，可用 `GRID_RUN_SHA256`/`VGPU_RUN_SHA256` 覆盖）
 - ich777 内核源码包的 SHA256 按内核版本固化（6.18.43–6.18.47），未知内核告警放行（`KERNEL_ARCHIVE_SHA256` 可覆盖）
+
+## 镜像不可用时的处置（下载失败排查）
+
+构建日志出现 `could not be obtained from any source` 时，看它列出的每个来源及拒绝原因：
+
+- `HTML page, not the .run installer (anti-bot/CrowdSec challenge on the host)`
+  → 该镜像挡住了自动化下载。把 `.run` 放到任一可达位置即可，三种方式：
+  1. **本地/缓存**：直接放进 `downloads/`（`DL_DIR`），已存在且校验通过的文件会被复用，不再下载；
+  2. **GitHub Release 镜像**（推荐，CI 无需额外凭据）：
+     ```bash
+     scripts/publish-run-mirror.sh downloads/grid-535.309.01.run downloads/vgpu-kvm-535.309.01.run
+     ```
+     默认发布到本仓库 `sources` tag 的 Release（资产名必须是 `grid-<grid版本>.run` / `vgpu-kvm-<version>.run`）；用别的仓库或私有地址时设置仓库变量 `RUN_MIRROR_REPO` / `RUN_MIRROR_TAG` / `RUN_MIRROR_BASE`。该 Release 只放构建输入，驱动包仍在各自内核 tag 下，`--latest=false` 不会影响"最新 Release"。
+  3. **自有 URL**：把 `GRID_RUN_URL` / `VGPU_RUN_URL`（仓库变量或环境变量）指向自己的对象存储/NAS 直链。
+
+> 官方 `.run` 是 NVIDIA 专有二进制，公开再分发受 GRID/vGPU 许可限制；若不希望公开托管，优先用方式 1 或方式 3。
 
 ## 本地构建
 
@@ -121,4 +141,4 @@ KERNEL_RELEASE=6.18.44-Unraid ./scripts/build-nvidia-driver.sh
 | 6.18.46-Unraid | `nvidia-535.309.01-…-2.txz` | `nvidia-580.178.05-…-1.txz` |
 | 6.18.47-Unraid | `nvidia-535.309.01-…-2.txz` | `nvidia-580.178.05-…-1.txz` |
 
-> Release 中仅包含编译完成的驱动包（`.txz` + `.md5`），不含任何官方驱动源码或 .run 文件。云编译所需的官方 .run 从 alist 镜像获取，开源容器工具随仓库提交。
+> Release 中仅包含编译完成的驱动包（`.txz` + `.md5`），不含任何官方驱动源码或 .run 文件。云编译所需的官方 .run 从 alist 镜像获取；若该镜像不可用（见上文"镜像不可用时的处置"），则从可选的 GitHub Release 镜像或 `GRID_RUN_URL`/`VGPU_RUN_URL` 获取，开源容器工具随仓库提交。

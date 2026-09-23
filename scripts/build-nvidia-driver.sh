@@ -76,8 +76,29 @@ if [ -n "$ALIST_PKG_DIR" ]; then
 else
   ALIST_BASE="${ALIST_BASE:-https://alist.homelabproject.cc/d/foxipan/vGPU/${ALIST_VGPU_BRANCH}/NVIDIA-GRID-Linux-KVM-${VERSION}-${ALIST_WINVER}}"
 fi
-GRID_RUN_URL="${GRID_RUN_URL:-${ALIST_BASE}/Guest_Drivers/NVIDIA-Linux-x86_64-${GRID_VERSION}-grid.run}"
-VGPU_RUN_URL="${VGPU_RUN_URL:-${ALIST_BASE}/Host_Drivers/NVIDIA-Linux-x86_64-${VERSION}-vgpu-kvm.run}"
+# Fallback source: the same .run files published as assets of a GitHub release
+# (public repos need no auth). Since 2026-09 the alist share answers *every*
+# download path (/d/, /p/, /dav/) with a CrowdSec anti-bot challenge page over
+# HTTP 200, so curl happily saves ~300 KiB of HTML instead of the installer.
+# Publish the files once with scripts/publish-run-mirror.sh and unattended
+# builds survive the mirror being blocked. Point RUN_MIRROR_REPO at another
+# repository (or a self-hosted base URL) if you prefer to keep this repo free of
+# official .run binaries.
+RUN_MIRROR_REPO="${RUN_MIRROR_REPO:-${GITHUB_REPOSITORY:-hellomrli/my-nvidia-vgpu-driver}}"
+RUN_MIRROR_TAG="${RUN_MIRROR_TAG:-sources}"
+RUN_MIRROR_BASE="${RUN_MIRROR_BASE:-https://github.com/${RUN_MIRROR_REPO}/releases/download/${RUN_MIRROR_TAG}}"
+# Reject anything that is obviously not an installer (see run_file_problem).
+RUN_MIN_BYTES="${RUN_MIN_BYTES:-10485760}"
+# Candidate URLs per file, tried in order until one yields a valid file.
+# GRID_RUN_URL / VGPU_RUN_URL (explicit override) still wins when set.
+GRID_RUN_URLS=()
+if [ -n "${GRID_RUN_URL:-}" ]; then GRID_RUN_URLS+=("$GRID_RUN_URL"); fi
+GRID_RUN_URLS+=("${ALIST_BASE}/Guest_Drivers/NVIDIA-Linux-x86_64-${GRID_VERSION}-grid.run")
+GRID_RUN_URLS+=("${RUN_MIRROR_BASE}/grid-${GRID_VERSION}.run")
+VGPU_RUN_URLS=()
+if [ -n "${VGPU_RUN_URL:-}" ]; then VGPU_RUN_URLS+=("$VGPU_RUN_URL"); fi
+VGPU_RUN_URLS+=("${ALIST_BASE}/Host_Drivers/NVIDIA-Linux-x86_64-${VERSION}-vgpu-kvm.run")
+VGPU_RUN_URLS+=("${RUN_MIRROR_BASE}/vgpu-kvm-${VERSION}.run")
 CC="${CC:-gcc}"
 HOSTCC="${HOSTCC:-$CC}"
 CXX="${CXX:-g++}"
@@ -110,30 +131,111 @@ kmake() {
 }
 
 # ---------- 1. merged source tree ----------
-# make sure the two official .run files are present (alist mirror by default)
+sha256_of() { sha256sum "$1" | awk '{print $1}'; }
+
+# Anti-bot pages (CrowdSec & friends) are served as text/html with HTTP 200, so
+# `curl --fail` cannot catch them - sniff the payload instead.
+is_html_page() {
+  head -c 1024 "$1" 2>/dev/null | LC_ALL=C grep -qiE '<!doctype html|<html|<title>|crowdsec|challenge'
+}
+
+# NVIDIA .run installers are makeself archives ("#! /bin/sh"), a few builds are
+# plain ELF binaries. Returns 0 when the signature looks right.
+looks_like_run() {
+  local magic
+  magic="$(head -c 4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)"
+  case "$magic" in
+    2321*)     return 0 ;;   # "#!/..." self-extracting shell archive
+    7f454c46)  return 0 ;;   # ELF binary
+    *)         return 1 ;;
+  esac
+}
+
+# Echo the reason a candidate file is unusable (and return 1), or return 0.
+# This is where a blocked mirror is detected, before the pinned SHA256 check
+# (which used to report the block as a confusing "checksum mismatch").
+run_file_problem() {
+  local f="$1" want_sha="$2" size got
+  if [ ! -s "$f" ]; then echo "file is missing or empty"; return 1; fi
+  if is_html_page "$f"; then
+    echo "HTML page, not the .run installer (anti-bot/CrowdSec challenge on the host)"
+    return 1
+  fi
+  size="$(wc -c < "$f")"
+  if [ "$size" -lt "$RUN_MIN_BYTES" ]; then
+    echo "only ${size} bytes - an installer is tens of MB (truncated or wrong file)"
+    return 1
+  fi
+  if [ -n "$want_sha" ]; then
+    got="$(sha256_of "$f")"
+    if [ "$got" != "$want_sha" ]; then
+      echo "sha256 mismatch: got ${got:0:16}..., expected ${want_sha:0:16}..."
+      return 1
+    fi
+  elif ! looks_like_run "$f"; then
+    echo "unexpected signature (not a self-extracting .run/ELF binary)"
+    return 1
+  fi
+  return 0
+}
+
+# fetch_run <label> <dest> <expected sha256|""> <url>...
+# Tries every candidate source in order and keeps the first valid file; dies
+# with a per-source report when none works, so the cause is never ambiguous.
+fetch_run() {
+  local label="$1" dest="$2" want_sha="$3"; shift 3
+  local url tmp problem report=""
+  for url in "$@"; do
+    tmp="${dest}.tmp"
+    rm -f "$tmp"
+    log "Fetching $label <- $url"
+    if ! curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 \
+              --speed-limit 1024 --speed-time 60 -o "$tmp" "$url"; then
+      report="${report}  - ${url}"$'\n'"      curl failed (HTTP error / DNS / network)"$'\n'
+      rm -f "$tmp"
+      continue
+    fi
+    if problem="$(run_file_problem "$tmp" "$want_sha")"; then
+      mv "$tmp" "$dest"
+      log "OK: $label saved to $dest ($(du -h "$dest" | cut -f1))"
+      return 0
+    fi
+    report="${report}  - ${url}"$'\n'"      rejected: ${problem}"$'\n'
+    rm -f "$tmp"
+  done
+  die "$label could not be obtained from any source:
+$report
+Provide the file instead of relying on a mirror, any of:
+  * drop it into $DL_DIR (an existing valid file there is reused as-is),
+  * publish it as a GitHub release asset: scripts/publish-run-mirror.sh <file>,
+  * point GRID_RUN_URL / VGPU_RUN_URL (or RUN_MIRROR_BASE) at a reachable copy."
+}
+
+# make sure the two official .run files are present: reuse a valid local copy
+# (a rebuild must not re-download 400 MB), otherwise fetch from the sources
 need_cmd curl
 GRID_RUN="$DL_DIR/grid-${GRID_VERSION}.run"
 VGPU_RUN="$DL_DIR/vgpu-kvm-${VERSION}.run"
-if [ ! -s "$GRID_RUN" ]; then
-  log "Downloading grid driver from alist mirror"
-  curl -L --fail --retry 3 --retry-delay 2 -o "$GRID_RUN.tmp" "$GRID_RUN_URL"
-  mv "$GRID_RUN.tmp" "$GRID_RUN"
+if problem="$(run_file_problem "$GRID_RUN" "$GRID_RUN_SHA256")"; then
+  log "Reusing grid driver $GRID_RUN"
+else
+  log "Local grid driver unusable (${problem}) - fetching grid ${GRID_VERSION}"
+  fetch_run "grid driver ${GRID_VERSION}" "$GRID_RUN" "$GRID_RUN_SHA256" "${GRID_RUN_URLS[@]}"
 fi
-if [ ! -s "$VGPU_RUN" ]; then
-  log "Downloading vgpu-kvm driver from alist mirror"
-  curl -L --fail --retry 3 --retry-delay 2 -o "$VGPU_RUN.tmp" "$VGPU_RUN_URL"
-  mv "$VGPU_RUN.tmp" "$VGPU_RUN"
+if problem="$(run_file_problem "$VGPU_RUN" "$VGPU_RUN_SHA256")"; then
+  log "Reusing vgpu-kvm driver $VGPU_RUN"
+else
+  log "Local vgpu-kvm driver unusable (${problem}) - fetching vgpu-kvm ${VERSION}"
+  fetch_run "vgpu-kvm driver ${VERSION}" "$VGPU_RUN" "$VGPU_RUN_SHA256" "${VGPU_RUN_URLS[@]}"
 fi
-# verify the .run files against the pinned SHA256 (supply-chain check)
+# provenance: the pinned SHA256 has already been enforced by run_file_problem
 if [ -n "$GRID_RUN_SHA256" ]; then
-  echo "$GRID_RUN_SHA256  $GRID_RUN" | sha256sum -c - >/dev/null \
-    || die "grid .run SHA256 mismatch - override GRID_RUN_SHA256 when building a different version"
+  log "grid ${GRID_VERSION} verified against pinned sha256 ${GRID_RUN_SHA256:0:16}..."
 else
   log "WARNING: no pinned SHA256 for grid ${GRID_VERSION} - set GRID_RUN_SHA256 to enforce"
 fi
 if [ -n "$VGPU_RUN_SHA256" ]; then
-  echo "$VGPU_RUN_SHA256  $VGPU_RUN" | sha256sum -c - >/dev/null \
-    || die "vgpu-kvm .run SHA256 mismatch - override VGPU_RUN_SHA256 when building a different version"
+  log "vgpu-kvm ${VERSION} verified against pinned sha256 ${VGPU_RUN_SHA256:0:16}..."
 else
   log "WARNING: no pinned SHA256 for vgpu-kvm ${VERSION} - set VGPU_RUN_SHA256 to enforce"
 fi
@@ -192,7 +294,9 @@ if [ ! -s "$KERNEL_ARCHIVE" ]; then
   mv "$KERNEL_ARCHIVE.tmp" "$KERNEL_ARCHIVE"
 fi
 if [ -n "$KERNEL_ARCHIVE_SHA256" ]; then
-  echo "$KERNEL_ARCHIVE_SHA256  $KERNEL_ARCHIVE" | sha256sum -c - >/dev/null || die "Kernel archive checksum mismatch"
+  kernel_sha="$(sha256_of "$KERNEL_ARCHIVE")"
+  [ "$kernel_sha" = "$KERNEL_ARCHIVE_SHA256" ] \
+    || die "Kernel archive checksum mismatch for ${KERNEL_ARCHIVE}: got ${kernel_sha:0:16}..., expected ${KERNEL_ARCHIVE_SHA256:0:16}... (delete the file to re-download)"
 fi
 if [ ! -s "$KERNEL_DIR/.config" ] || [ ! -s "$KERNEL_DIR/Module.symvers" ]; then
   log "Extracting kernel tree"

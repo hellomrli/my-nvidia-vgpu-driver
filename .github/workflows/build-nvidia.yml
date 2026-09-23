@@ -77,7 +77,16 @@ jobs:
           KERNEL_RELEASE: ${{ inputs.kernel_release }}
           TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
           PACKAGE_BUILD: ${{ inputs.package_build }}
-          # .run files are fetched from the alist mirror (see build script)
+          # Optional download-source overrides, configured as repository
+          # Variables (Settings -> Secrets and variables -> Actions -> Variables).
+          # The public alist mirror answers automated downloads with an anti-bot
+          # challenge page (since 2026-09); the build then falls back to the
+          # GitHub release mirror below and lists every source it tried.
+          GRID_RUN_URL: ${{ vars.GRID_RUN_URL }}
+          VGPU_RUN_URL: ${{ vars.VGPU_RUN_URL }}
+          RUN_MIRROR_REPO: ${{ vars.RUN_MIRROR_REPO }}
+          RUN_MIRROR_TAG: ${{ vars.RUN_MIRROR_TAG }}
+          RUN_MIRROR_BASE: ${{ vars.RUN_MIRROR_BASE }}
         run: |
           set -euo pipefail
           export TARGET_KERNEL_VERSION="${KERNEL_RELEASE%-Unraid}"
