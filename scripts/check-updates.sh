@@ -37,6 +37,27 @@ log() { printf '[check-updates] %s\n' "$*" >&2; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { log "ERROR: missing $1"; exit 1; }; }
 
+# GET a GitHub API URL, authenticated whenever a token is available.
+# Unauthenticated calls are capped at 60 requests/hour *per IP* and
+# GitHub-hosted runners share their egress IPs, so the daily check used to end
+# up with an opaque empty result (5 silent retries, then a red run). On failure
+# this logs the HTTP status and the API message instead of returning nothing.
+gh_api() {
+  local url="$1" body status
+  local -a auth=()
+  [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  body="$(mktemp)"
+  status="$(curl -sS -o "$body" -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+            ${auth[@]+"${auth[@]}"} "$url" || true)"
+  if [ "$status" != "200" ]; then
+    log "GitHub API HTTP ${status:-none} for $url: $(head -c 200 "$body" 2>/dev/null | tr -d '\n')"
+    rm -f "$body"
+    return 1
+  fi
+  cat "$body"
+  rm -f "$body"
+}
+
 # ---------- 1. latest vGPU 16.x branch + driver/windows version ----------
 need_cmd curl
 need_cmd jq
@@ -67,12 +88,12 @@ log "Latest driver: $driver_version (windows $windows_version, dir $pkg_dir)"
 
 # ---------- 2. latest ich777/unraid_kernel release ----------
 log "Querying $KERNEL_REPO releases"
-# GitHub API can transiently 504/503; retry a few times with a pause, then
-# give up gracefully (the next daily run will pick it up).
+# GitHub API can transiently 504/503 or rate-limit the shared runner IPs; retry
+# a few times with a pause, then give up gracefully (the next daily run will
+# pick it up). gh_api logs the real reason for every failed attempt.
 latest_kernel=""
 for attempt in 1 2 3 4 5; do
-  latest_kernel="$(curl -sS --retry 2 --retry-delay 3 \
-    "https://api.github.com/repos/$KERNEL_REPO/releases?per_page=1" \
+  latest_kernel="$(gh_api "https://api.github.com/repos/$KERNEL_REPO/releases?per_page=1" \
     | jq -r '.[0].tag_name // empty' 2>/dev/null || true)"
   [ -n "$latest_kernel" ] && break
   log "kernel release query failed (attempt $attempt), retrying in 10s"
@@ -109,6 +130,9 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPOSITORY:-}" ]; then
     reason="new kernel $latest_kernel (no release)"
   else
     reason="release check failed (http $code); will retry next run"
+    if [ -s /tmp/rel.json ]; then
+      log "release check failed: http $code $(head -c 200 /tmp/rel.json | tr -d '\n')"
+    fi
   fi
 else
   # without GitHub context we cannot compare; report the latest and let the caller decide
