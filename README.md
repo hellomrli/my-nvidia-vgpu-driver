@@ -79,6 +79,7 @@ out/nvidia-<版本>-<内核>-Unraid-<构建号>.txz   (+ .md5)
 
 `.github/workflows/build-nvidia.yml` 执行 `scripts/build-nvidia-driver.sh`（合并 → 编译 → 打包）：
 
+- **自动触发**：`.github/workflows/check-updates.yml` 每天 01:00 UTC 检查所有被跟踪的 vGPU 主线（`VGPU_MAJORS`，默认 `16 19`）与 ich777 最新内核；**每条线各自判断**该内核是否已有对应包，缺哪条就为哪条 dispatch 一次构建（两条都缺就各发一次，构建工作流用 concurrency 串行执行）。所以新内核发布后会自动同时产出 16.x 与 19.x 两个包，不需要再手动补编
 - **手动触发**：运行 *Build NVIDIA vGPU driver* 工作流，填写：
   - `driver_version`：`535.309.01`（16.x）或 `580.178.05`（19.x）
   - `vgpu_branch`：`16.14` 或 `19.6`
