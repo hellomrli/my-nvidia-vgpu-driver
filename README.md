@@ -1,145 +1,73 @@
 # my-nvidia-vgpu-driver
 
-为 **Unraid** 编译的 **NVIDIA vGPU（Merged）驱动**，基于 NVIDIA 官方 Linux 驱动包构建，打包为可直接安装到 Unraid 服务器的 Slackware `.txz` 格式。
+为 **Unraid** 提供 **NVIDIA vGPU（Merged）驱动包**，将虚拟机 vGPU 与宿主机 Docker/CUDA 所需组件合并，配合 [my-unraid-vgpu-manager](https://github.com/hellomrli/my-unraid-vgpu-manager) 管理驱动和虚拟 GPU。
 
-配合 [my-unraid-vgpu-manager](https://github.com/hellomrli/my-unraid-vgpu-manager) 插件使用——插件负责按检测到的 GPU 型号选择驱动系列、下载本包、安装并管理 vGPU 设备（mdev）供虚拟机直通。
+> [!IMPORTANT]
+> **这是社区合并驱动，不代表 NVIDIA 对 Unraid 的官方支持。** 请按 GPU 型号选择系列，不要仅因为版本更新就更换驱动。
 
-## 驱动系列（双系列并行发布）
+## 安装管理插件
 
-每个内核版本的 Release tag 下**同时携带两个系列**的驱动包，按硬件选择：
+**[插件安装链接（.plg）](https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg)**
 
-| 系列 | 驱动版本 | 分支状态 | 硬件范围 | 资产命名 |
-|------|----------|----------|----------|----------|
-| **16.x** | 535.309.01 | vGPU 16.14 LTS（2026-07 EOL，末版） | Maxwell / Pascal / Volta / Turing / Ampere / Ada：**P4、P6、P40、P100**、V100、M60/M10、T4、Quadro RTX 6000/8000、A40、L40/L40S、RTX 6000 Ada 等 | `nvidia-535.309.01-<内核>-Unraid-<构建号>.txz` |
-| **19.x** | 580.178.05 | vGPU 19.6 **现行 LTS**（支持到 2028-07） | **Turing T4 起**：Ampere（A40/A10）、Ada（L40/L40S/RTX 6000 Ada）、Blackwell（B 系列）。**不含 Pascal/Maxwell**（17 分支起移除） | `nvidia-580.178.05-<内核>-Unraid-<构建号>.txz` |
+打开 Unraid 的 **插件（Plugins）→ 安装插件（Install Plugin）**，粘贴下面的地址。点击代码块右上角的**复制按钮**即可复制完整链接：
 
-> guest 驱动兼容性（NVIDIA 官方矩阵）：19.x/20.x 宿主只接受同分支及 19.x 的 guest 驱动；升级宿主驱动时 VM 内 guest 驱动需同步升级。两系列的取舍可参考插件页面按 GPU 型号给出的建议。
-
-## 什么是 Merged 驱动？
-
-一个包同时提供**两种能力**：
-
-| 用途 | 组件 |
-|------|------|
-| **vGPU 虚拟机直通** | `nvidia-vgpu-vfio.ko`、`nvidia-vgpud`、`nvidia-vgpu-mgr`、`vgpuConfig.xml`、`libnvidia-vgpu.so`、`libnvidia-vgxcfg.so` |
-| **宿主机 GPU（docker/CUDA/OpenGL）** | `nvidia.ko`、`nvidia-uvm/modeset/drm/peermem`、`libcuda`、OpenGL/OpenCL/Vulkan 用户态库 |
-
-**实测验证**（Tesla P4，535.309.01，Unraid 6.18.44）：GPU 绑定 `nvidia` 标准驱动，同时 `nvidia-vgpu-vfio` 暴露 mdev 类型，因此**同一张卡上**：
-
-- 宿主机 `nvidia-smi -L` 可见 → `GPU 0: Tesla P4`
-- Docker 容器 `--gpus all`（`nvidia/cuda:12.2.0-base-ubuntu22.04`）可见 → `Tesla P4, CUDA 12.2`
-- vGPU mdev 可同时创建（如 `nvidia-65` 4GB 档）分配给 VM
-
-即：**宿主机 docker/CUDA 调用 GPU 的同时，vGPU 也能切分给 VM**，两者并行不冲突。
-
-> 注意：Merged 效果来自 `nvidia` + `nvidia-vgpu-vfio` 双模块共存，**不需要**任何 `cudahost=1` / `vup_kunlock=1` 之类的 modprobe 参数（这些参数并不存在，会被内核忽略）。
-
-源码树由 `scripts/merge-driver.sh` 生成：
-
-- **grid** 包（标准 Linux 驱动）作为基础
-- **vgpu-kvm** 包贡献 vGPU 内核驱动 + 用户态组件
-- `conftest.sh` 同时定义 `VGX_KVM_BUILD=1` 和 `GRID_BUILD=1`，一次编译产出两套模块
-
-**16.x（535.309.01）**：grid 与 vgpu-kvm 的 `nv-kernel.o_binary` 逐字节相同，仅 conftest 标志不同，合并天然安全。
-
-**19.x（580.178.05）**：两包的 RM 二进制**布局不同**（grid 构建为 580.178.04，vgpu 构建为 580.178.05），但导出符号集**完全一致**（61647 个符号，已实测）。合并脚本因此：
-
-- 采用 **vgpu-kvm 的 `nv-kernel.o_binary`**，并把顶层 `kernel/Kbuild` 的 `NV_VERSION_STRING` 重新品牌化为 vgpu 版本——保证 `modinfo -F version nvidia` 与包名一致（插件的更新逻辑依赖这一点）；
-- `nvidia-sources.Kbuild` 的 vfio-interface 插入使用多锚点兜底（535：`nv-frontend.c`；580：`os-interface.c`；580 的 `Makefile` 本身已含 `nvidia-vgpu-vfio`）；
-- soname 链接按库组区分版本：grid 体系库（libcuda 等）指向 `GRID_VERSION`（580.178.04），vgpu 体系库指向 `VERSION`（580.178.05）。
-
-## vgpu_unlock（消费级 GPU 解锁）
-
-驱动包内置了开源项目 [vgpu_unlock](https://github.com/DualCoder/vgpu_unlock) / [vgpu_unlock-rs](https://github.com/mbilker/vgpu_unlock-rs) 的完整两层组件，用于让**消费级游戏卡**（不在 NVIDIA vGPU 认证名单里的 GTX/RTX 卡）也能切分 vGPU：
-
-| 层 | 组件 | 说明 |
-|----|------|------|
-| **内核层** | `vgpu_unlock_hooks.c` + `kern.ld` | 编译进 `nvidia.ko`：hook `memcpy`/`nv_ioremap*`，把 `nv-kernel.o` 的 `.rodata` 重定位到 `.data` 以便改写 vGPU 配置签名（已适配 535.x 的 magic 值） |
-| **用户空间层** | `libvgpu_unlock_rs.so`（预编译，`/usr/local/lib/`） | 插件通过 `LD_PRELOAD` 注入 `nvidia-vgpud`/`nvidia-vgpu-mgr`，hook ioctl 把消费卡的 PCI 设备 ID 伪装成 vGPU 认证卡 |
-
-**支持范围**（与 vgpu_unlock 上游一致）：
-
-- ✅ Maxwell / Pascal / Turing 消费卡（GTX 9/10 系列、RTX 20 系列），伪装成对应的 Tesla/Quadro 认证卡
-- ⚠️ Ampere（RTX 30 系列）上游标记为 work-in-progress
-- ❌ Ada Lovelace（RTX 40 系列）不支持
-
-**启用方式**：在插件的 NVIDIA GPU 页打开 **vGPU unlock** 开关即可（`/etc/vgpu_unlock/config.toml` 的 `unlock = true`，配合 `LD_PRELOAD` 启动守护进程）。
-
-> ⚠️ **unlock 内核补丁仅构建进 16.x 系列**（`UNLOCK_PATCH=auto`：magic 值为 535 专属，其余分支自动跳过，可用 `UNLOCK_PATCH=1/0` 强制）。原生 vGPU 认证卡（Tesla P4 等）不需要 unlock。消费级卡的解锁路径**尚未在真机上验证**。
-
-## 构建产物
-
-```
-out/nvidia-<版本>-<内核>-Unraid-<构建号>.txz   (+ .md5)
+```text
+https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg
 ```
 
-针对目标 Unraid 内核编译的 6 个内核模块，加上完整用户态（库、二进制、vgpuConfig.xml、许可模板、安装脚本）。包内**不包含** `etc/docker/daemon.json`——Docker nvidia runtime 由插件在运行时用 `nvidia-ctk`/jq 合并配置，避免覆盖用户已有的 Docker 配置。
+管理插件需要 **Unraid 7.2.3 或更新版本**。Unraid 会通过 `.plg` 下载对应的插件安装包，后续在插件管理器中更新即可；无需手动下载插件包。**安装插件本身不会安装 NVIDIA 驱动**，驱动由你在插件中选择后安装。
 
-## 云编译（GitHub Actions）
+## 快速开始
 
-`.github/workflows/build-nvidia.yml` 执行 `scripts/build-nvidia-driver.sh`（合并 → 编译 → 打包）：
+1. 卸载管理同一 NVIDIA 驱动的其他插件并重启，避免与 Nvidia-Driver、旧 vgpu-driver 等插件冲突。
+2. 打开 **设置 → Unraid vGPU 管理器 → 驱动管理**，按显卡选择支持的系列并安装。插件下载与当前 Unraid 内核匹配的驱动包。
+3. 在 **NVIDIA 显卡 → 授权与模块** 中配置授权服务，再选择显卡与配置档，创建 vGPU 并绑定到目标虚拟机。
+4. 关闭并重新启动虚拟机，使设备在冷启动时挂载；在客户机中安装兼容的 NVIDIA vGPU 驱动，完成所需授权。
 
-- **自动触发**：`.github/workflows/check-updates.yml` 每天 01:00 UTC 检查所有被跟踪的 vGPU 主线（`VGPU_MAJORS`，默认 `16 19`）与 ich777 最新内核；**每条线各自判断**该内核是否已有对应包，缺哪条就为哪条 dispatch 一次构建（两条都缺就各发一次，构建工作流用 concurrency 串行执行）。所以新内核发布后会自动同时产出 16.x 与 19.x 两个包，不需要再手动补编
-- **手动触发**：运行 *Build NVIDIA vGPU driver* 工作流，填写：
-  - `driver_version`：`535.309.01`（16.x）或 `580.178.05`（19.x）
-  - `vgpu_branch`：`16.14` 或 `19.6`
-  - `kernel_release`：目标 Unraid 内核（如 `6.18.44-Unraid`）
-  - `package_build`：构建号
-  - `alist_pkg_dir`：**19.x 等三段式目录必须填写**（如 `NVIDIA-GRID-Linux-KVM-580.178.05-580.178.04-582.78`，格式为 host-grid-windows，会自动推导 grid 版本）；16.x 的两段式目录留空即可（由 `windows_version` 拼出）
-- 两个官方 NVIDIA `.run` 文件（grid + vgpu-kvm）按以下顺序自动获取，**任一来源可用即通过**：
-  1. `GRID_RUN_URL` / `VGPU_RUN_URL`（显式覆盖，仓库变量可配）
-  2. 公开 alist 镜像 `https://alist.homelabproject.cc/foxipan/vGPU/`
-  3. GitHub Release 镜像 `https://github.com/<RUN_MIRROR_REPO>/releases/download/<RUN_MIRROR_TAG>/grid-*.run`（默认 `sources` tag，用 `scripts/publish-run-mirror.sh` 发布）
+完成后，插件会显示 vGPU 设备及其虚拟机绑定；已启用的驱动和设备在重启后从已校验的缓存包恢复。详细设置见[插件中文使用指南](https://github.com/hellomrli/my-unraid-vgpu-manager/blob/master/docs/guide.zh-CN.md)。
 
-  每个来源下载后都会校验：不是 HTML 反爬页、体积不为几百 KB、签名是自解压脚本/ELF，最后比对固化的 SHA256；全部失败时报出**每个来源各自失败的原因**（2026-09 起 alist 的 `/d/`、`/p/`、`/dav/` 全部被 CrowdSec 挑战页接管，HTTP 200 返回 ~300 KiB HTML，因此 `curl --fail` 不会报错——现在会直接指出"HTML page, not the .run installer"）
-- `nvidia-container-toolkit` + `libnvidia-container` 从仓库本体的 `tools/` 目录读取（开源组件，随仓库提交，打包时按 `tools/SHA256SUMS` 校验）
+## 选择哪个驱动系列？
 
-构建产物附加到 **tag 等于内核版本** 的 Release（如 `6.18.44-Unraid`、`6.18.47-Unraid`）。**Release 只包含编译好的驱动包，不包含任何官方源码或 .run 文件。**
-
-## 供应链校验
-
-- 官方 `.run` 文件的 SHA256 按驱动版本固化在 `build-nvidia-driver.sh` 内（535.309.01 与 580.178.04/580.178.05 已固化；未知版本告警放行，可用 `GRID_RUN_SHA256`/`VGPU_RUN_SHA256` 覆盖）
-- ich777 内核源码包的 SHA256 按内核版本固化（6.18.43–6.18.47），未知内核告警放行（`KERNEL_ARCHIVE_SHA256` 可覆盖）
-
-## 镜像不可用时的处置（下载失败排查）
-
-构建日志出现 `could not be obtained from any source` 时，看它列出的每个来源及拒绝原因：
-
-- `HTML page, not the .run installer (anti-bot/CrowdSec challenge on the host)`
-  → 该镜像挡住了自动化下载。把 `.run` 放到任一可达位置即可，三种方式：
-  1. **本地/缓存**：直接放进 `downloads/`（`DL_DIR`），已存在且校验通过的文件会被复用，不再下载；
-  2. **GitHub Release 镜像**（推荐，CI 无需额外凭据）：
-     ```bash
-     scripts/publish-run-mirror.sh downloads/grid-535.309.01.run downloads/vgpu-kvm-535.309.01.run
-     ```
-     默认发布到本仓库 `sources` tag 的 Release（资产名必须是 `grid-<grid版本>.run` / `vgpu-kvm-<version>.run`）；用别的仓库或私有地址时设置仓库变量 `RUN_MIRROR_REPO` / `RUN_MIRROR_TAG` / `RUN_MIRROR_BASE`。该 Release 只放构建输入，驱动包仍在各自内核 tag 下，`--latest=false` 不会影响"最新 Release"。
-  3. **自有 URL**：把 `GRID_RUN_URL` / `VGPU_RUN_URL`（仓库变量或环境变量）指向自己的对象存储/NAS 直链。
-
-> 官方 `.run` 是 NVIDIA 专有二进制，公开再分发受 GRID/vGPU 许可限制；若不希望公开托管，优先用方式 1 或方式 3。
-
-## 本地构建
-
-```bash
-# 16.x：
-VERSION=535.309.01 KERNEL_RELEASE=6.18.44-Unraid ./scripts/build-nvidia-driver.sh
-
-# 19.x（注意 GRID_VERSION 与三段式目录）：
-VERSION=580.178.05 GRID_VERSION=580.178.04 \
-ALIST_VGPU_BRANCH=19.6 \
-ALIST_PKG_DIR=NVIDIA-GRID-Linux-KVM-580.178.05-580.178.04-582.78 \
-KERNEL_RELEASE=6.18.44-Unraid ./scripts/build-nvidia-driver.sh
-```
-
-需要 Linux 环境（gcc/make/curl/tar/xz/kmod）。**本地路径不能包含空格**——NVIDIA 的 makeself 自解压脚本不兼容含空格路径（GitHub Actions 上无此问题）。也可先 `merge-driver.sh` 单独合并，再 `build/rebuild-driver.sh` 针对新内核重编译。
-
-## Release
-
-| 内核 tag | 16.x 资产 | 19.x 资产 |
+| 系列 | 已提供的驱动版本 | 选择建议 |
 |---|---|---|
-| 6.18.43-Unraid | `nvidia-535.309.01-…-2.txz` | `nvidia-580.178.05-…-1.txz` |
-| 6.18.44-Unraid | `nvidia-535.309.01-…-3.txz` | `nvidia-580.178.05-…-1.txz` |
-| 6.18.45-Unraid | `nvidia-535.309.01-…-2.txz` | `nvidia-580.178.05-…-1.txz` |
-| 6.18.46-Unraid | `nvidia-535.309.01-…-2.txz` | `nvidia-580.178.05-…-1.txz` |
-| 6.18.47-Unraid | `nvidia-535.309.01-…-2.txz` | `nvidia-580.178.05-…-1.txz` |
+| **16.x / R535** | `535.309.01` | P4、P40、P100 等旧型号的兼容路线；本项目的消费卡 unlock 内核补丁也仅适配这一系列。 |
+| **19.x / R580** | `580.178.05` | T4、A40、L40/L40S 等该分支支持的型号；新安装且硬件同时受两个系列支持时，插件推荐 19.x。**不能用于替代 P4 等 Pascal 卡的 16.x 驱动。** |
 
-> Release 中仅包含编译完成的驱动包（`.txz` + `.md5`），不含任何官方驱动源码或 .run 文件。云编译所需的官方 .run 从 alist 镜像获取；若该镜像不可用（见上文"镜像不可用时的处置"），则从可选的 GitHub Release 镜像或 `GRID_RUN_URL`/`VGPU_RUN_URL` 获取，开源容器工具随仓库提交。
+具体型号与支持周期以 [NVIDIA 官方列表](https://docs.nvidia.com/vgpu/gpus-supported-by-vgpu.html)为准。P4/P40/P100 等旧型号的官方维护已结束，继续适配 Unraid 内核不等于获得新的官方安全修复。插件的型号提示不是兼容性认证；部分较新 GPU 还需先启用 NVIDIA SR-IOV，插件不会自动执行 `sriov-manage`。
+
+切换系列前，停止使用 GPU 的虚拟机和容器，并核对宿主与客户机的[驱动兼容性要求](https://docs.nvidia.com/vgpu/)。插件的普通更新保持已安装系列，不会自动从 16.x 升到 19.x；更新后，已停止的工作负载需要手动启动。
+
+## Merged 驱动能做什么？
+
+| 用途 | 包内组件 |
+|---|---|
+| **虚拟机 vGPU** | `nvidia-vgpu-vfio`、vGPU 守护进程及配置档，用于创建和管理虚拟 GPU 设备。 |
+| **宿主机与容器 GPU** | `nvidia`、CUDA/图形用户态库及 NVIDIA 容器工具，用于宿主 GPU 访问和 Docker GPU 工作负载。 |
+
+项目已有的 **Tesla P4 / 535.309.01 / 6.18.44-Unraid** 验证记录包含：宿主 `nvidia-smi` 识别 GPU、Docker CUDA 容器使用 GPU，以及同时创建 vGPU mdev 供虚拟机使用。**这一结果不能推广为所有显卡、驱动系列或负载都能稳定并行。**
+
+不需要添加 `cudahost=1`、`vup_kunlock=1` 等无效模块参数。Docker runtime 由插件合并配置，驱动包不会覆盖你的 `daemon.json`。
+
+## 消费级显卡与 vgpu_unlock
+
+项目集成 [vgpu_unlock](https://github.com/DualCoder/vgpu_unlock) / [vgpu_unlock-rs](https://github.com/mbilker/vgpu_unlock-rs)，作为非原生 vGPU 显卡的实验性选项。**原生支持 vGPU 的 P4 等显卡不需要启用 unlock。**
+
+| 显卡范围 | 本项目的使用边界 |
+|---|---|
+| Maxwell / Pascal / Turing 消费卡，如 GTX 9/10、RTX 20 | 上游面向的主要范围，但不保证每个型号可用；本项目的消费卡路径尚无真机验证。 |
+| Ampere 消费卡，如 RTX 30 | 上游仍标记为开发中，不作为稳定支持承诺。 |
+| Ada 消费卡，如 RTX 40 | 本项目的 unlock 路径不支持；专业卡的原生 vGPU 支持是另一回事。 |
+
+需要测试时，在插件的 NVIDIA 显卡页启用 **vGPU unlock**，使用带对应内核补丁的 **16.x** 包；19.x 不提供这条解锁路线。硬件解锁不等于获得 NVIDIA 许可证，仍需满足所用软件的授权要求。
+
+## 内核匹配与更新
+
+驱动包必须与**完整 Unraid 内核版本**匹配。Unraid 写入新系统后、重启之前，确认插件已准备新内核对应的已选系列；没有匹配包时，不要用其他内核的包代替。
+
+本仓库分别提供 16.x 与 19.x 包，实际可用内核及版本以[已发布驱动包](https://github.com/hellomrli/my-nvidia-vgpu-driver/releases)为准。插件的定时检查只提示更新，不自动安装；系统升级预下载也不会替换当前运行的驱动。
+
+## 文档与反馈
+
+- [插件中文说明](https://github.com/hellomrli/my-unraid-vgpu-manager/blob/master/README.zh-CN.md)：安装、配置与日常操作。
+- [NVIDIA vGPU 官方文档](https://docs.nvidia.com/vgpu/)：支持矩阵、客户机驱动及许可要求。驱动中的 NVIDIA 专有组件仍受其相应许可约束。
+- [问题反馈](https://github.com/hellomrli/my-nvidia-vgpu-driver/issues)：请附 GPU 型号、Unraid/内核版本、驱动系列和相关日志，移除授权令牌等敏感信息。
