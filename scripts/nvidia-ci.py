@@ -34,12 +34,10 @@ def log(message):
 
 
 def fetch_json(url):
-    request = Request(url, headers={"User-Agent": "my-nvidia-vgpu-driver/update-check"})
-    with urlopen(request, timeout=45) as response:
-        data = response.read(8 * 1024 * 1024 + 1)
-        if len(data) > 8 * 1024 * 1024:
-            raise ValueError("Mirror catalog is unexpectedly large")
-        return json.loads(data)
+    request = Request(url, headers={"User-Agent": "my-nvidia-vgpu-driver/update-check",
+                                    "Accept": "application/json"})
+    return json.loads(targets.http.get_bytes(request, limit=8 * 1024 * 1024,
+                                            retry_forbidden=True, opener=urlopen))
 
 
 def directory_names(data):
@@ -134,6 +132,10 @@ class GitHub:
                                 "Content-Length": str(upload.stat().st_size)})
             request = Request(f"https://{host}/repos/{self.repository}/{path}", data=data,
                               headers=headers, method=method)
+            if method == "GET":
+                return json.loads(targets.http.get_bytes(request, limit=8 * 1024 * 1024,
+                                                        timeout=60, same_host=True, opener=urlopen))
+            # Do not replay release creation or uploads after an ambiguous error.
             with urlopen(request, timeout=600 if upload is not None else 60) as response:
                 return json.load(response)
         finally:

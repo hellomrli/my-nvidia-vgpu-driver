@@ -142,6 +142,19 @@ class MirrorTests(unittest.TestCase):
         with self.assertRaises(OSError):
             ci.resolve_lines(["16", "19"], lambda _: (_ for _ in ()).throw(OSError("offline")))
 
+    def test_real_mirror_fetch_retries_public_403_and_parses_json(self):
+        url = "https://mirror.test/list?path=/vGPU"
+        response = io.BytesIO(b'{"code": 200, "data": {"content": []}}')
+        response.status = 200
+        response.url = url
+        error = HTTPError(url, 403, "Forbidden", {}, None)
+        self.addCleanup(error.close)
+        with patch.object(ci, "urlopen", side_effect=[error, response]) as call, \
+                patch.object(ci.targets.http.time, "sleep") as sleep:
+            self.assertEqual(ci.directory_names(ci.fetch_json(url)), [])
+        self.assertEqual(call.call_count, 2)
+        sleep.assert_called_once_with(5)
+
 
 class PackageTests(unittest.TestCase):
     def test_only_current_kernel_by_series_cross_product_is_checked(self):
@@ -391,6 +404,41 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(request.headers["Authorization"], "Bearer test-token")
         self.assertEqual(json.loads(request.data), {"tag_name": K58})
 
+    def test_read_api_request_uses_retry_helper_without_losing_authentication(self):
+        url = f"https://api.github.com/repos/owner/repo/releases/tags/{K58}"
+        error = HTTPError(url, 503, "Unavailable", {}, None)
+        self.addCleanup(error.close)
+        response = io.BytesIO(json.dumps({"id": 1, "tag_name": K58, "draft": False}).encode())
+        response.status = 200
+        response.url = url
+        with patch.object(ci, "urlopen", side_effect=[error, response]) as call, \
+                patch.object(ci.targets.http.time, "sleep") as sleep:
+            self.assertEqual(self.api.release(K58)["id"], 1)
+        self.assertEqual(call.call_count, 2)
+        self.assertTrue(all(c.args[0].headers["Authorization"] == "Bearer test-token" for c in call.call_args_list))
+        sleep.assert_called_once_with(5)
+
+    def test_api_404_is_missing_but_permission_403_still_fails(self):
+        for code in (404, 403):
+            error = HTTPError("https://api.github.test", code, "failure", {}, None)
+            self.addCleanup(error.close)
+            with self.subTest(code=code), patch.object(ci, "urlopen", side_effect=error) as call, \
+                    patch.object(ci.targets.http.time, "sleep") as sleep:
+                if code == 404: self.assertIsNone(self.api.release(K58))
+                else:
+                    with self.assertRaises(HTTPError): self.api.release(K58)
+                self.assertEqual(call.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_write_requests_are_not_replayed_on_transient_errors(self):
+        error = HTTPError("https://api.github.test", 503, "Unavailable", {}, None)
+        self.addCleanup(error.close)
+        with patch.object(ci, "urlopen", side_effect=error) as call, \
+                patch.object(ci.targets.http.time, "sleep") as sleep:
+            with self.assertRaises(HTTPError): self.api.request("POST", "releases", {"tag_name": K58})
+        self.assertEqual(call.call_count, 1)
+        sleep.assert_not_called()
+
     def test_streamed_upload_sends_exact_length_and_bytes(self):
         received = {}
         class Handler(BaseHTTPRequestHandler):
@@ -466,6 +514,20 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(len(result["builds"]), 4)
         self.assertIn("7.3.4", (self.directory / "summary").read_text())
         self.assertIn("7.4.0-rc.2", (self.directory / "summary").read_text())
+
+    def test_metadata_failure_never_reports_up_to_date_or_writes_a_build_plan(self):
+        output = io.StringIO()
+        error = HTTPError(ci.targets.CATALOG_URL, 403, "Forbidden", {}, None)
+        self.addCleanup(error.close)
+        with patch.dict(os.environ, self.env, clear=True), patch.object(ci, "ROOT", self.directory), \
+                patch.object(ci, "GitHub", return_value=self.api), \
+                patch.object(ci.targets, "resolve", side_effect=error), \
+                patch("sys.argv", ["nvidia-ci.py", "check"]), redirect_stdout(output):
+            with self.assertRaises(HTTPError): ci.main()
+        self.assertEqual(output.getvalue(), "")
+        self.assertFalse((self.directory / "output").exists())
+        self.assertFalse((self.directory / "out/build-plan.json").exists())
+        self.assertEqual(self.api.requests, [])
 
     def test_plan_records_exact_artifact_and_resolved_kernel_outputs(self):
         result = self.run_command("plan")

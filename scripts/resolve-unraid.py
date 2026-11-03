@@ -2,12 +2,19 @@
 """Resolve current Unraid channels plus ich777's latest preparation kernel."""
 
 from html.parser import HTMLParser
+import importlib.util
 import json
 import os
+from pathlib import Path
 import re
 import sys
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+
+spec = importlib.util.spec_from_file_location("http_fetch", Path(__file__).with_name("http_fetch.py"))
+http = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(http)
 
 
 # This is the catalog used by the official download_list page's VersionsTable.
@@ -101,17 +108,13 @@ def kernel_from_notes(html, version):
 
 
 def fetch(url):
-    headers = {"User-Agent": "my-nvidia-vgpu-driver/kernel-resolver"}
+    headers = {"User-Agent": "my-nvidia-vgpu-driver/kernel-resolver",
+               "Accept": "application/json, text/html;q=0.9"}
     if urlparse(url).hostname == "api.github.com" and os.environ.get("GH_TOKEN"):
         headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
     request = Request(url, headers=headers)
-    with urlopen(request, timeout=45) as response:
-        if urlparse(response.url).hostname != urlparse(url).hostname:
-            raise ValueError("Unexpected cross-host redirect from official release metadata")
-        data = response.read(4 * 1024 * 1024 + 1)
-        if len(data) > 4 * 1024 * 1024:
-            raise ValueError("Official release response is unexpectedly large")
-        return data.decode("utf-8")
+    return http.get_bytes(request, limit=4 * 1024 * 1024, same_host=True,
+                          retry_forbidden=urlparse(url).hostname != "api.github.com").decode("utf-8")
 
 
 def resolve(fetch_text=fetch):

@@ -142,6 +142,21 @@ class UnraidTargetsTests(unittest.TestCase):
             return self.fetch(url)
         with self.assertRaises(OSError): targets.resolve(fetch)
 
+    def test_live_fetch_uses_retries_limits_and_official_host_validation(self):
+        with patch.dict(os.environ, {'GH_TOKEN': 'test-token'}):
+            for url, public in ((targets.CATALOG_URL, True),
+                                (self.stable['changelog_pretty'], True),
+                                (targets.ICH777_URL, False)):
+                with self.subTest(url=url), patch.object(targets.http, 'get_bytes', return_value=b'[]') as call:
+                    self.assertEqual(targets.fetch(url), '[]')
+                self.assertEqual(call.call_args.kwargs['limit'], 4 * 1024 * 1024)
+                self.assertTrue(call.call_args.kwargs['same_host'])
+                self.assertEqual(call.call_args.kwargs['retry_forbidden'], public)
+                request = call.call_args.args[0]
+                self.assertEqual(request.full_url, url)
+                self.assertEqual(request.get_method(), 'GET')
+                self.assertEqual(request.get_header('Authorization'), None if public else 'Bearer test-token')
+
     def test_failure_emits_no_github_matrix_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)/'output'
