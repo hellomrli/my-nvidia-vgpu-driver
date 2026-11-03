@@ -64,7 +64,9 @@ https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-ma
 
 驱动包必须与**完整 Unraid 内核版本**匹配。Unraid 写入新系统后、重启之前，确认插件已准备新内核对应的已选系列；没有匹配包时，不要用其他内核的包代替。
 
-本仓库分别提供 16.x 与 19.x 包，实际可用内核及版本以[已发布驱动包](https://github.com/hellomrli/my-nvidia-vgpu-driver/releases)为准。插件的定时检查只提示更新，不自动安装；系统升级预下载也不会替换当前运行的驱动。
+本仓库只维护[当前 Unraid 正式版及公开测试版](https://docs.unraid.net/unraid-os/download_list/)在对应 [Release notes](https://docs.unraid.net/category/release-notes/) 中列出的内核，以及 [ich777 最新内核](https://github.com/ich777/unraid_kernel/releases/latest)。三个来源合并去重，分别检查 16.x、19.x，只为缺少对应版本完整包的组合补编。ich777 内核用于提前准备新系统；退出这些来源的历史内核不再跟进更新，已有驱动包保留。
+
+实际可用内核及版本以[已发布驱动包](https://github.com/hellomrli/my-nvidia-vgpu-driver/releases)为准。插件的定时检查只提示更新，不自动安装；系统升级预下载也不会替换当前运行的驱动。
 
 ## 文档与反馈
 

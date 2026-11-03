@@ -12,3 +12,4 @@ out/
 out-merged/
 *.ko
 Module.symvers
+__pycache__/

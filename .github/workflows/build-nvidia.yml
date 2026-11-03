@@ -1,4 +1,5 @@
 name: Build NVIDIA vGPU (Merged) driver for Unraid
+run-name: NVIDIA ${{ inputs.driver_version }} / ${{ inputs.kernel_release }}
 
 on:
   workflow_dispatch:
@@ -19,42 +20,77 @@ on:
         default: '539.72'
         type: string
       alist_pkg_dir:
-        description: 'Explicit alist package dir for 3-number layouts (e.g. NVIDIA-GRID-Linux-KVM-580.178.05-580.178.04-582.78). Overrides windows_version.'
+        description: 'Exact package dir for host-GRID-Windows layouts; must match the version inputs'
         required: false
         default: ''
         type: string
       kernel_release:
-        description: 'Unraid kernel release (e.g. 6.18.44-Unraid)'
+        description: 'Current stable/beta/RC kernel, or latest for the newest ich777 kernel'
         required: false
-        default: '6.18.44-Unraid'
+        default: 'latest'
         type: string
       package_build:
-        description: 'Package build number'
+        description: 'auto increments; an explicit build number must exceed existing builds'
         required: false
-        default: '1'
+        default: 'auto'
         type: string
+      force_rebuild:
+        description: 'Intentionally rebuild an already complete package under a new filename'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: write
-
-concurrency:
-  group: nvidia-vgpu-build
-  cancel-in-progress: false
+  contents: read
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      kernel_release: ${{ steps.plan.outputs.kernel_release }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Test kernel targeting and build policy
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Plan current-kernel build
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.driver_version }}
+          ALIST_VGPU_BRANCH: ${{ inputs.vgpu_branch }}
+          ALIST_WINVER: ${{ inputs.windows_version }}
+          ALIST_PKG_DIR: ${{ inputs.alist_pkg_dir }}
+          KERNEL_RELEASE: ${{ inputs.kernel_release }}
+          PACKAGE_BUILD_INPUT: ${{ inputs.package_build }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: python3 scripts/nvidia-ci.py plan
+
   build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    # Resolve "latest" before locking, so manual and scheduled requests for
+    # the same kernel/version serialize without displacing unrelated builds.
+    concurrency:
+      group: nvidia-vgpu-${{ needs.plan.outputs.kernel_release }}-${{ inputs.driver_version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     container:
-      # GCC 15 matches the official Unraid kernel toolchain; the 6.18 kernel
-      # requires -fmin-function-alignment (gcc >= 14).
+      # GCC 15 matches the official Unraid 6.18 kernel toolchain.
       image: gcc:15.3.0
     env:
       DEBIAN_FRONTEND: noninteractive
       TZ: UTC
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         shell: bash
@@ -62,26 +98,35 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             bc bison build-essential ca-certificates curl flex git jq kmod \
-            libelf-dev make tar xz-utils
+            libelf-dev make python3 tar xz-utils
           rm -rf /var/lib/apt/lists/*
           gcc --version | head -1
           nproc
 
+      - name: Refresh build plan under the kernel and driver lock
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.driver_version }}
+          ALIST_VGPU_BRANCH: ${{ inputs.vgpu_branch }}
+          ALIST_WINVER: ${{ inputs.windows_version }}
+          ALIST_PKG_DIR: ${{ inputs.alist_pkg_dir }}
+          KERNEL_RELEASE: ${{ needs.plan.outputs.kernel_release }}
+          PACKAGE_BUILD_INPUT: ${{ inputs.package_build }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: python3 scripts/nvidia-ci.py plan
+
       - name: Build NVIDIA merged driver package
+        if: steps.plan.outputs.build == 'true'
         shell: bash
         env:
           VERSION: ${{ inputs.driver_version }}
           ALIST_VGPU_BRANCH: ${{ inputs.vgpu_branch }}
           ALIST_WINVER: ${{ inputs.windows_version }}
           ALIST_PKG_DIR: ${{ inputs.alist_pkg_dir }}
-          KERNEL_RELEASE: ${{ inputs.kernel_release }}
-          TARGET_KERNEL_VERSION: ${{ inputs.kernel_release }}
-          PACKAGE_BUILD: ${{ inputs.package_build }}
-          # Optional download-source overrides, configured as repository
-          # Variables (Settings -> Secrets and variables -> Actions -> Variables).
-          # The public alist mirror answers automated downloads with an anti-bot
-          # challenge page (since 2026-09); the build then falls back to the
-          # GitHub release mirror below and lists every source it tried.
+          KERNEL_RELEASE: ${{ steps.plan.outputs.kernel_release }}
+          PACKAGE_BUILD: ${{ steps.plan.outputs.package_build }}
+          # Preserve explicit sources and the fallback for blocked mirrors.
           GRID_RUN_URL: ${{ vars.GRID_RUN_URL }}
           VGPU_RUN_URL: ${{ vars.VGPU_RUN_URL }}
           RUN_MIRROR_REPO: ${{ vars.RUN_MIRROR_REPO }}
@@ -92,39 +137,8 @@ jobs:
           export TARGET_KERNEL_VERSION="${KERNEL_RELEASE%-Unraid}"
           ./scripts/build-nvidia-driver.sh
 
-      - name: Publish Release
-        shell: bash
+      - name: Publish complete immutable package
+        if: steps.plan.outputs.build == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KERNEL_RELEASE: ${{ inputs.kernel_release }}
-        run: |
-          set -euo pipefail
-          pkg="$(ls out/nvidia-*.txz | head -1)"
-          pkg_base="$(basename "$pkg")"
-          release_tag="${KERNEL_RELEASE}"
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases"
-          rid="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
-                  "${api}/tags/${release_tag}" | jq -r '.id // empty' 2>/dev/null || true)"
-          if [ -z "$rid" ]; then
-            rid="$(curl -fsSL -X POST -H "Authorization: Bearer ${GH_TOKEN}" \
-                   -H "Accept: application/vnd.github+json" \
-                   -d "{\"tag_name\":\"${release_tag}\",\"name\":\"NVIDIA vGPU (Merged) for ${release_tag}\",\"body\":\"MERGED driver (vGPU + GRID) ${{ inputs.driver_version }} for ${release_tag}\"}" \
-                   "${api}" | jq -r '.id')"
-          fi
-          # upload (or replace) the package assets via uploads.github.com
-          upload_api="https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${rid}/assets"
-          for f in "$pkg" "$pkg.md5"; do
-            base="$(basename "$f")"
-            asset_id="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" \
-                        "${api}/${rid}/assets?per_page=100" | \
-                        jq -r --arg n "$base" '.[] | select(.name == $n) | .id' | head -1)"
-            if [ -n "$asset_id" ]; then
-              curl -fsSL -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" \
-                "${api}/assets/${asset_id}"
-            fi
-            curl -fsSL -X POST -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Content-Type: application/octet-stream" \
-              --data-binary "@$f" \
-              "${upload_api}?name=${base}"
-          done
-          echo "Published ${pkg_base} to release ${release_tag}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/nvidia-ci.py publish

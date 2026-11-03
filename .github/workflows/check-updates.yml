@@ -2,8 +2,8 @@ name: Check NVIDIA vGPU / Unraid kernel updates
 
 on:
   schedule:
-    # daily 01:00 UTC (09:00 CST) - checks every tracked vGPU line (16.x + 19.x)
-    # and ich777/unraid_kernel for new releases
+    # Daily 01:00 UTC (09:00 CST): both series for the current stable, public
+    # beta/RC and latest ich777 preparation kernels. Shared kernels build once.
     - cron: '0 1 * * *'
   workflow_dispatch: {}   # allow a manual check
 
@@ -18,9 +18,13 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Test kernel targeting and build policy
+        run: python3 -m unittest discover -s tests -v
 
       - name: Check for updates
         id: check
@@ -33,8 +37,7 @@ jobs:
           echo "$result" | tee /tmp/check-result.json
 
           echo "build_count=$(echo "$result" | jq -r '.builds | length')" >> "$GITHUB_OUTPUT"
-          echo "kernel_release=$(echo "$result" | jq -r '.kernel_release')" >> "$GITHUB_OUTPUT"
-          echo "reason=$(echo "$result" | jq -r '.reason')" >> "$GITHUB_OUTPUT"
+          echo "kernel_releases=$(echo "$result" | jq -c '.kernel_releases')" >> "$GITHUB_OUTPUT"
           echo "$result" | jq -c '.builds' > /tmp/builds.json
 
       - name: Trigger driver builds
@@ -45,19 +48,18 @@ jobs:
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/build-nvidia.yml/dispatches"
-          # one dispatch per tracked vGPU line that is missing a package for the
-          # new kernel (16.x and 19.x are built independently; the build
-          # workflow serialises them through its concurrency group)
+          # Each kernel/driver pair has its own build lock; unrelated pending
+          # builds must not replace one another in a global concurrency group.
           while IFS= read -r build; do
             label="$(jq -r '"\(.major)x driver \(.driver_version) for \(.kernel_release) (\(.reason))"' <<<"$build")"
-            payload="$(jq -n --argjson b "$build" \
-              '{ref:"master", inputs:{
+            payload="$(jq -n --argjson b "$build" --arg ref "$GITHUB_REF_NAME" \
+              '{ref:$ref, inputs:{
                  driver_version:$b.driver_version,
                  vgpu_branch:$b.vgpu_branch,
                  windows_version:$b.windows_version,
                  alist_pkg_dir:$b.alist_pkg_dir,
                  kernel_release:$b.kernel_release,
-                 package_build:"1"}}')"
+                 package_build:"auto"}}')"
             echo "Dispatching: $label"
             curl -fsS -X POST \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -70,6 +72,8 @@ jobs:
       - name: Report (no build needed)
         if: steps.check.outputs.build_count == '0'
         shell: bash
+        env:
+          TARGET_KERNELS: ${{ steps.check.outputs.kernel_releases }}
         run: |
-          echo "Up to date. ${{ steps.check.outputs.reason }}"
-          echo "kernel=${{ steps.check.outputs.kernel_release }}"
+          echo "Both NVIDIA series already have complete matching packages."
+          echo "Current kernels: $TARGET_KERNELS"
