@@ -39,7 +39,7 @@ https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-ma
 
 ## 更新与维护
 
-自动任务每天检查当前 Unraid 正式版、公开 beta/RC 和 ich777 最新内核，对两个驱动系列补齐缺少的完整包。历史内核退出目标后不再更新，已发布包保留。
+自动任务每周三北京时间 09:17 检查当前 Unraid 正式版、公开 beta/RC 和 ich777 最新内核，对两个驱动系列补齐缺少的完整包；需要及时检查时，可在 GitHub Actions 手动运行更新检查。历史内核退出目标后不再更新，已发布包保留。
 
 安装、内核升级预下载和回退由 [my-unraid-vgpu-manager](https://github.com/hellomrli/my-unraid-vgpu-manager)处理；构建源、版本参数和发布策略见[构建指南](docs/building.md)。
 

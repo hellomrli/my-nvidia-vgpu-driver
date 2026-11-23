@@ -2,9 +2,10 @@ name: Check NVIDIA vGPU / Unraid kernel updates
 
 on:
   schedule:
-    # Daily 01:00 UTC (09:00 CST): both series for the current stable, public
-    # beta/RC and latest ich777 preparation kernels. Shared kernels build once.
-    - cron: '0 1 * * *'
+    # Wednesdays 01:17 UTC (09:17 Asia/Shanghai), once a week to reduce
+    # mirror requests. Check both series for the current stable, public beta/RC
+    # and latest ich777 preparation kernels. Shared kernels build once.
+    - cron: '17 1 * * 3'
   workflow_dispatch: {}   # allow a manual check
 
 permissions:

@@ -4,7 +4,9 @@
 
 ## 使用自动任务
 
-[check-updates.yml](../.github/workflows/check-updates.yml) 每天 UTC 01:00 检查官方正式版、公开 beta/RC 和 ich777 最新内核。每个内核分别核对 16.x 与 19.x 的最新有效完整包，缺少时派发 [build-nvidia.yml](../.github/workflows/build-nvidia.yml)。
+[check-updates.yml](../.github/workflows/check-updates.yml) 每周三 UTC 01:17（北京时间 09:17）检查官方正式版、公开 beta/RC 和 ich777 最新内核。每个内核分别核对 16.x 与 19.x 的最新有效完整包，缺少时派发 [build-nvidia.yml](../.github/workflows/build-nvidia.yml)。
+
+每周检查可减少对驱动镜像站的请求，但不能保证镜像站不再返回 HTTP 403。需要及时检查新驱动或内核时，在 GitHub Actions 选择更新检查工作流并点击 **Run workflow** 手动运行。
 
 手动构建需使 `driver_version`、`vgpu_branch`、`windows_version` 和可选的 `alist_pkg_dir` 对应同一版本布局。`kernel_release=latest` 表示解析 ich777 最新内核，不是对所有内核构建。
 

@@ -45,7 +45,7 @@ PACKAGE_BUILD="${PACKAGE_BUILD:-1}"
 KERNEL_ARCHIVE_URL="${KERNEL_ARCHIVE_URL:-https://github.com/ich777/unraid_kernel/releases/download/${KERNEL_RELEASE}/linux-${KERNEL_RELEASE}.tar.xz}"
 # Per-release SHA256 of the ich777 kernel archive (an archive hash is only
 # valid for its own kernel!). Unknown releases fall back to no check (a
-# warning is logged) so the daily auto-build for new kernels keeps working.
+# warning is logged) so the scheduled auto-build for new kernels keeps working.
 case "${KERNEL_RELEASE}" in
   6.18.44-Unraid) DEFAULT_KERNEL_SHA256="618df8d001e9f98b95306eb2eac4cb776d0bf4b98061f0f4cedbc10c1468858d" ;;
   6.18.45-Unraid) DEFAULT_KERNEL_SHA256="365dee16bbd9c505d36a0d0a1a2bc63723f8a8d55b2f7c7991d806a4c849df7b" ;;
