@@ -2,6 +2,7 @@
 """Plan current-kernel NVIDIA builds and publish complete, immutable packages."""
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import json
@@ -21,6 +22,9 @@ spec.loader.exec_module(targets)
 SERIES = {"16": "535", "19": "580"}
 VERSION = r"[0-9]+(?:\.[0-9]+)+"
 KERNEL = r"[0-9]+\.[0-9]+\.[0-9]+-Unraid"
+ALIST_API = "https://alist.homelabproject.cc/api/fs/list"
+VGPU_PATH = "/foxipan/vGPU"
+CATALOG_MAX_AGE = timedelta(days=30)
 
 
 def require(value, pattern, label):
@@ -87,8 +91,8 @@ def driver_line(branch, directory):
 def resolve_lines(majors, fetch=fetch_json, api=None, path=None):
     if not majors or len(set(majors)) != len(majors) or any(m not in SERIES for m in majors):
         raise ValueError("VGPU_MAJORS must contain distinct supported series: 16 and/or 19")
-    api = api or os.environ.get("ALIST_API", "https://alist.homelabproject.cc/api/fs/list")
-    path = path or os.environ.get("VGPU_PATH", "/foxipan/vGPU")
+    api = api or os.environ.get("ALIST_API", ALIST_API)
+    path = path or os.environ.get("VGPU_PATH", VGPU_PATH)
     def listing(directory):
         return directory_names(fetch(api + "?" + urlencode({"path": directory})))
     branches = listing(path)
@@ -107,6 +111,63 @@ def resolve_lines(majors, fetch=fetch_json, api=None, path=None):
         log(f"vGPU {major}: {branch}, driver {line['driver_version']}")
         lines.append(line)
     return lines
+
+
+def read_driver_catalog(cache_file, source, majors, now):
+    if cache_file.stat().st_size > 64 * 1024:
+        raise ValueError("Driver catalog cache is too large")
+    catalog = json.loads(cache_file.read_text())
+    if (not isinstance(catalog, dict) or type(catalog.get("schema")) is not int
+            or catalog["schema"] != 1 or catalog.get("source") != source
+            or not isinstance(catalog.get("lines"), list)):
+        raise ValueError("Invalid driver catalog cache or mismatched mirror source")
+    checked_at = datetime.fromisoformat(catalog["checked_at"])
+    if checked_at.tzinfo is None:
+        raise ValueError("Driver catalog timestamp must include a timezone")
+    age = now - checked_at
+    if age < -timedelta(minutes=5) or age > CATALOG_MAX_AGE:
+        raise ValueError("Driver catalog cache is expired or dated in the future")
+    by_major = {}
+    for line in catalog["lines"]:
+        normalized = driver_line(line["vgpu_branch"], line["alist_pkg_dir"])
+        if line != normalized or normalized["major"] in by_major:
+            raise ValueError("Inconsistent or duplicate cached NVIDIA driver series")
+        by_major[normalized["major"]] = normalized
+    if not set(majors).issubset(by_major):
+        raise ValueError("Driver catalog cache lacks a requested NVIDIA series")
+    return [by_major[major] for major in majors], checked_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def resolve_driver_catalog(majors, cache_file=None, now=None):
+    if not majors or len(set(majors)) != len(majors) or any(m not in SERIES for m in majors):
+        raise ValueError("VGPU_MAJORS must contain distinct supported series: 16 and/or 19")
+    now = now or datetime.now(timezone.utc)
+    source = {"api": os.environ.get("ALIST_API", ALIST_API),
+              "path": os.environ.get("VGPU_PATH", VGPU_PATH)}
+    cache_file = Path(cache_file) if cache_file else None
+    try:
+        lines = resolve_lines(majors, api=source["api"], path=source["path"])
+    except HTTPError as error:
+        # Only the observed public mirror 403 can use previously verified
+        # versions. Invalid catalogs, TLS errors and GitHub errors still fail.
+        if error.code != 403 or cache_file is None:
+            raise
+        try:
+            lines, checked_at = read_driver_catalog(cache_file, source, majors, now)
+        except (OSError, ValueError, KeyError, TypeError) as cache_error:
+            raise ValueError("NVIDIA mirror returned HTTP 403 and no valid driver catalog "
+                             f"within 30 days is available: {cache_error}") from error
+        print("::warning::NVIDIA mirror returned HTTP 403. Using driver versions verified at "
+              f"{checked_at}; newer NVIDIA driver versions could not be checked.", file=sys.stderr)
+        return lines, {"source": "cache", "checked_at": checked_at, "latest_confirmed": False}
+    checked_at = now.isoformat(timespec="seconds")
+    if cache_file is not None:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_file.with_name(cache_file.name + ".tmp")
+        temporary.write_text(json.dumps({"schema": 1, "checked_at": checked_at,
+                                         "source": source, "lines": lines}, indent=2) + "\n")
+        temporary.replace(cache_file)
+    return lines, {"source": "mirror", "checked_at": checked_at, "latest_confirmed": True}
 
 
 class GitHub:
@@ -291,6 +352,11 @@ def summary(resolved, result=None):
             item = resolved[channel]
             file.write(f"- {channel}: " + (f"{item.get('version', 'preparation')} / `{item['kernel_release']}`" if item else "no current public prerelease") + "\n")
         if result:
+            catalog = result.get("driver_catalog")
+            if catalog and not catalog["latest_confirmed"]:
+                file.write("\n> **NVIDIA driver update check incomplete:** the mirror returned HTTP 403. "
+                           f"Kernel packages were checked using driver versions verified at {catalog['checked_at']}. "
+                           "Newer NVIDIA driver versions could not be checked.\n\n")
             for item in result.get("decisions", []):
                 file.write(f"- `{item['kernel_release']}` / {item['major']}.x: {item['reason']}\n")
 
@@ -310,8 +376,10 @@ def main():
         return
     resolved = targets.resolve()
     if args.command == "check":
-        lines = resolve_lines(os.environ.get("VGPU_MAJORS", "16 19").split())
+        lines, catalog = resolve_driver_catalog(os.environ.get("VGPU_MAJORS", "16 19").split(),
+                                               os.environ.get("VGPU_CATALOG_CACHE"))
         result = check_updates(resolved, lines, api)
+        result["driver_catalog"] = catalog
         summary(resolved, result)
         print(json.dumps(result, indent=2))
         return

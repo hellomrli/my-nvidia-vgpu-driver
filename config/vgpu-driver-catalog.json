@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "checked_at": "2026-11-25T09:58:22+00:00",
+  "source": {
+    "api": "https://alist.homelabproject.cc/api/fs/list",
+    "path": "/foxipan/vGPU"
+  },
+  "lines": [
+    {
+      "major": "16",
+      "vgpu_branch": "16.14",
+      "driver_version": "535.309.01",
+      "windows_version": "539.72",
+      "alist_pkg_dir": "NVIDIA-GRID-Linux-KVM-535.309.01-539.72"
+    },
+    {
+      "major": "19",
+      "vgpu_branch": "19.7",
+      "driver_version": "580.196.09",
+      "windows_version": "582.99",
+      "alist_pkg_dir": "NVIDIA-GRID-Linux-KVM-580.196.09-580.196.07-582.99"
+    }
+  ]
+}

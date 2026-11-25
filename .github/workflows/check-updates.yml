@@ -27,11 +27,49 @@ jobs:
       - name: Test kernel targeting and build policy
         run: python3 -m unittest discover -s tests -v
 
+      - name: Locate last verified NVIDIA driver catalog
+        id: catalog
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          metadata="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100")"
+          artifact="$(jq -c --arg ref "$GITHUB_REF_NAME" \
+            '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == $ref \
+              and (.name | test("^nvidia-driver-catalog-[1-9][0-9]*$")))] \
+              | max_by(.created_at) // empty' <<<"$metadata")"
+          if [ -n "$artifact" ]; then
+            echo "run_id=$(jq -r '.workflow_run.id' <<<"$artifact")" >> "$GITHUB_OUTPUT"
+            echo "artifact_name=$(jq -r '.name' <<<"$artifact")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore last verified NVIDIA driver catalog
+        if: steps.catalog.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ${{ steps.catalog.outputs.artifact_name }}
+          path: out
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.catalog.outputs.run_id }}
+
+      - name: Initialize driver catalog when no cache is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ ! -f out/driver-catalog.json ]; then
+            cp config/vgpu-driver-catalog.json out/driver-catalog.json
+          fi
+
       - name: Check for updates
         id: check
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VGPU_CATALOG_CACHE: out/driver-catalog.json
         run: |
           set -euo pipefail
           result="$(./scripts/check-updates.sh)"
@@ -39,7 +77,18 @@ jobs:
 
           echo "build_count=$(echo "$result" | jq -r '.builds | length')" >> "$GITHUB_OUTPUT"
           echo "kernel_releases=$(echo "$result" | jq -c '.kernel_releases')" >> "$GITHUB_OUTPUT"
+          echo "catalog_latest_confirmed=$(echo "$result" | jq -r '.driver_catalog.latest_confirmed')" >> "$GITHUB_OUTPUT"
           echo "$result" | jq -c '.builds' > /tmp/builds.json
+
+      - name: Save successfully verified NVIDIA driver catalog
+        if: always() && steps.check.outputs.catalog_latest_confirmed == 'true'
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: nvidia-driver-catalog-${{ github.run_attempt }}
+          path: out/driver-catalog.json
+          retention-days: 35
+          if-no-files-found: error
 
       - name: Trigger driver builds
         if: steps.check.outputs.build_count != '0'
@@ -75,6 +124,12 @@ jobs:
         shell: bash
         env:
           TARGET_KERNELS: ${{ steps.check.outputs.kernel_releases }}
+          CATALOG_LATEST_CONFIRMED: ${{ steps.check.outputs.catalog_latest_confirmed }}
         run: |
-          echo "Both NVIDIA series already have complete matching packages."
+          if [ "$CATALOG_LATEST_CONFIRMED" = 'true' ]; then
+            echo "Both NVIDIA series already have complete matching packages."
+          else
+            echo "Cached NVIDIA versions have complete matching kernel packages."
+            echo "The NVIDIA mirror returned HTTP 403; newer driver versions could not be checked."
+          fi
           echo "Current kernels: $TARGET_KERNELS"

@@ -1,5 +1,6 @@
 from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import importlib.util
 import io
@@ -154,6 +155,126 @@ class MirrorTests(unittest.TestCase):
             self.assertEqual(ci.directory_names(ci.fetch_json(url)), [])
         self.assertEqual(call.call_count, 2)
         sleep.assert_called_once_with(5)
+
+
+class DriverCatalogTests(unittest.TestCase):
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.cache = Path(directory) / "catalog.json"
+        self.now = datetime(2026, 11, 25, 10, tzinfo=timezone.utc)
+        self.checked_at = (self.now - timedelta(days=7)).isoformat(timespec="seconds")
+        self.source = {"api": ci.ALIST_API, "path": ci.VGPU_PATH}
+        self.catalog = {"schema": 1, "checked_at": self.checked_at,
+                        "source": self.source, "lines": deepcopy(LINES)}
+        self.write_catalog(self.catalog)
+        self.enterContext(patch.dict(os.environ, {}, clear=True))
+        self.stdout = self.enterContext(redirect_stdout(io.StringIO()))
+        self.stderr = self.enterContext(redirect_stderr(io.StringIO()))
+
+    def write_catalog(self, catalog):
+        self.cache.write_text(json.dumps(catalog))
+
+    def resolve(self, failure=None, majors=("16", "19"), cache=True):
+        with patch.object(ci, "resolve_lines", return_value=LINES, side_effect=failure):
+            return ci.resolve_driver_catalog(list(majors), self.cache if cache else None, self.now)
+
+    def forbidden(self):
+        error = HTTPError(ci.ALIST_API, 403, "Forbidden", {}, None)
+        self.addCleanup(error.close)
+        return error
+
+    def test_live_catalog_refreshes_cache_and_replaces_older_versions(self):
+        newer = [LINES[0], ci.driver_line("19.7", "NVIDIA-GRID-Linux-KVM-580.196.09-580.196.07-582.99")]
+        with patch.object(ci, "resolve_lines", return_value=newer):
+            lines, status = ci.resolve_driver_catalog(["16", "19"], self.cache, self.now)
+        self.assertEqual(lines, newer)
+        self.assertTrue(status["latest_confirmed"])
+        cached = json.loads(self.cache.read_text())
+        self.assertEqual(cached["lines"], newer)
+        self.assertEqual(cached["checked_at"], self.now.isoformat(timespec="seconds"))
+        recovered, status = self.resolve(self.forbidden())
+        self.assertEqual(recovered, newer)
+        self.assertFalse(status["latest_confirmed"])
+
+    def test_mirror_403_uses_verified_cache_without_renewing_its_age(self):
+        previous = self.cache.read_bytes()
+        lines, status = self.resolve(self.forbidden())
+        self.assertEqual(lines, LINES)
+        self.assertEqual(status, {"source": "cache", "checked_at": self.checked_at,
+                                  "latest_confirmed": False})
+        self.assertEqual(self.cache.read_bytes(), previous)
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.assertIn("::warning::", self.stderr.getvalue())
+        self.assertIn("newer NVIDIA driver versions could not be checked", self.stderr.getvalue())
+
+    def test_requested_subset_can_use_a_complete_cached_catalog(self):
+        lines, _ = self.resolve(self.forbidden(), majors=("19",))
+        self.assertEqual(lines, [LINES[1]])
+
+    def test_cache_expiry_future_and_missing_timezone_are_rejected(self):
+        dates = [(self.now - timedelta(days=30, seconds=1)).isoformat(),
+                 (self.now + timedelta(minutes=6)).isoformat(),
+                 self.now.replace(tzinfo=None).isoformat(), "invalid", None]
+        for checked_at in dates:
+            self.write_catalog({**self.catalog, "checked_at": checked_at})
+            with self.subTest(checked_at=checked_at), self.assertRaisesRegex(ValueError, "HTTP 403.*no valid driver catalog"):
+                self.resolve(self.forbidden())
+
+    def test_cache_is_still_valid_at_its_exact_age_limit(self):
+        self.write_catalog({**self.catalog, "checked_at": (self.now - timedelta(days=30)).isoformat()})
+        self.assertEqual(self.resolve(self.forbidden())[0], LINES)
+
+    def test_bad_cache_never_substitutes_unverified_versions(self):
+        invalid = [None, {**self.catalog, "schema": True},
+                   {**self.catalog, "source": {**self.source, "path": "/another-share"}},
+                   {**self.catalog, "source": {**self.source, "api": "https://other.test/list"}},
+                   {**self.catalog, "lines": [LINES[0]]},
+                   {**self.catalog, "lines": [LINES[0], LINES[0], LINES[1]]},
+                   {**self.catalog, "lines": [LINES[0], {**LINES[1], "driver_version": "580.999.99"}]},
+                   {**self.catalog, "lines": [LINES[0], {**LINES[1], "windows_version": "999.99"}]},
+                   {**self.catalog, "lines": [LINES[0], {**LINES[1], "vgpu_branch": "16.14"}]},
+                   {**self.catalog, "lines": [LINES[0], {**LINES[1], "alist_pkg_dir": "../untrusted"}]},
+                   {**self.catalog, "lines": [None]}]
+        for catalog in invalid:
+            self.write_catalog(catalog)
+            with self.subTest(catalog=catalog), self.assertRaisesRegex(ValueError, "HTTP 403.*no valid driver catalog"):
+                self.resolve(self.forbidden())
+        self.assertEqual(self.stdout.getvalue(), "")
+        self.assertNotIn("::warning::", self.stderr.getvalue())
+
+    def test_missing_and_unparseable_cache_still_fail(self):
+        self.cache.unlink()
+        with self.assertRaisesRegex(ValueError, "HTTP 403.*no valid driver catalog"):
+            self.resolve(self.forbidden())
+        self.cache.write_text("not JSON")
+        with self.assertRaisesRegex(ValueError, "HTTP 403.*no valid driver catalog"):
+            self.resolve(self.forbidden())
+
+    def test_fallback_requires_explicit_cache_configuration(self):
+        with self.assertRaises(HTTPError):
+            self.resolve(self.forbidden(), cache=False)
+
+    def test_other_metadata_errors_are_not_hidden_by_a_valid_cache(self):
+        errors = [ValueError("invalid mirror catalog"), OSError("TLS certificate verification failed")]
+        for code in (401, 404, 429, 500):
+            error = HTTPError(ci.ALIST_API, code, "upstream failure", {}, None)
+            self.addCleanup(error.close)
+            errors.append(error)
+        for error in errors:
+            with self.subTest(error=error), self.assertRaises(type(error)):
+                self.resolve(error)
+        self.assertEqual(self.cache.read_text(), json.dumps(self.catalog))
+
+    def test_invalid_requested_series_cannot_use_cached_versions(self):
+        for majors in ([], ["16", "16"], ["20"]):
+            with self.subTest(majors=majors), self.assertRaises(ValueError):
+                self.resolve(self.forbidden(), majors=majors)
+
+    def test_committed_seed_has_consistent_series_and_versions(self):
+        seed = ROOT / "config/vgpu-driver-catalog.json"
+        verified_at = datetime.fromisoformat(json.loads(seed.read_text())["checked_at"])
+        lines, _ = ci.read_driver_catalog(seed, self.source, ["16", "19"], verified_at)
+        self.assertEqual({line["major"] for line in lines}, {"16", "19"})
 
 
 class PackageTests(unittest.TestCase):
@@ -514,6 +635,34 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(len(result["builds"]), 4)
         self.assertIn("7.3.4", (self.directory / "summary").read_text())
         self.assertIn("7.4.0-rc.2", (self.directory / "summary").read_text())
+        self.assertTrue(result["driver_catalog"]["latest_confirmed"])
+
+    def test_cached_check_still_finds_new_kernel_packages_and_reports_incomplete_driver_query(self):
+        cache = self.directory / "catalog.json"
+        verified_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        cache.write_text(json.dumps({"schema": 1, "checked_at": verified_at,
+                                     "source": {"api": ci.ALIST_API, "path": ci.VGPU_PATH},
+                                     "lines": LINES}))
+        previous = cache.read_bytes()
+        self.env["VGPU_CATALOG_CACHE"] = str(cache)
+        self.api = FakeGitHub({K58: pair() + pair("580.178.05", K58)})
+        error = HTTPError(ci.ALIST_API, 403, "Forbidden", {}, None)
+        self.addCleanup(error.close)
+        output, stderr = io.StringIO(), io.StringIO()
+        with patch.dict(os.environ, self.env, clear=True), patch.object(ci, "ROOT", self.directory), \
+                patch.object(ci, "GitHub", return_value=self.api), \
+                patch.object(ci.targets, "resolve", return_value=resolved()), \
+                patch.object(ci, "resolve_lines", side_effect=error), \
+                patch("sys.argv", ["nvidia-ci.py", "check"]), redirect_stdout(output), redirect_stderr(stderr):
+            ci.main()
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["driver_catalog"]["latest_confirmed"])
+        self.assertEqual({(item["kernel_release"], item["major"]) for item in result["builds"]},
+                         {(K60, "16"), (K60, "19")})
+        self.assertIn("driver update check incomplete", (self.directory / "summary").read_text())
+        self.assertIn("::warning::", stderr.getvalue())
+        self.assertEqual(cache.read_bytes(), previous)
+        self.assertFalse((self.directory / "out/build-plan.json").exists())
 
     def test_metadata_failure_never_reports_up_to_date_or_writes_a_build_plan(self):
         output = io.StringIO()
