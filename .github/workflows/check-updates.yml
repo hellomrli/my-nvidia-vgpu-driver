@@ -37,8 +37,8 @@ jobs:
           set -euo pipefail
           metadata="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100")"
           artifact="$(jq -c --arg ref "$GITHUB_REF_NAME" \
-            '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == $ref \
-              and (.name | test("^nvidia-driver-catalog-[1-9][0-9]*$")))] \
+            '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == $ref
+              and (.name | test("^nvidia-driver-catalog-[1-9][0-9]*$")))]
               | max_by(.created_at) // empty' <<<"$metadata")"
           if [ -n "$artifact" ]; then
             echo "run_id=$(jq -r '.workflow_run.id' <<<"$artifact")" >> "$GITHUB_OUTPUT"
